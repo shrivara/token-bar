@@ -252,11 +252,24 @@ func fmtMoney(_ d: Double) -> String { String(format: "$%.2f", d) }
 
 // MARK: - App
 
+struct BarValues {
+    var cost = 0.0, input = 0.0, output = 0.0, hit = 0.0
+
+    static func lerp(_ a: BarValues, _ b: BarValues, _ t: Double) -> BarValues {
+        BarValues(cost: a.cost + (b.cost - a.cost) * t,
+                  input: a.input + (b.input - a.input) * t,
+                  output: a.output + (b.output - a.output) * t,
+                  hit: a.hit + (b.hit - a.hit) * t)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
     var eventStream: FSEventStreamRef?
     var pendingRefresh: DispatchWorkItem?
+    var displayed = BarValues()
+    var animTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -321,11 +334,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var total = Agg()
         for s in sources { total.add(s.agg) }
 
-        let hitPct = String(format: "%.0f%%", total.hitRate * 100)
-        statusItem.button?.title =
-            "\(fmtMoney(total.cost))  \(fmtTokens(total.input))↑ \(fmtTokens(total.output))↓  \(hitPct)"
-
+        animateBar(to: BarValues(cost: total.cost, input: total.input,
+                                 output: total.output, hit: total.hitRate))
         rebuildMenu(total: total, sources: sources)
+    }
+
+    func setBarTitle(_ v: BarValues) {
+        let text = "\(fmtMoney(v.cost))  \(fmtTokens(v.input))↑ \(fmtTokens(v.output))↓  \(String(format: "%.0f%%", v.hit * 100))"
+        // Monospaced digits keep the title from wobbling while values roll
+        statusItem.button?.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)])
+    }
+
+    // Roll the bar through intermediate values (ease-out, ~0.8s)
+    func animateBar(to target: BarValues) {
+        animTimer?.invalidate()
+        let start = displayed
+        let changed = setBarNeedsUpdate(from: start, to: target)
+        guard changed else { return }
+
+        let duration = 0.8
+        let t0 = Date()
+        animTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+            let p = min(1, Date().timeIntervalSince(t0) / duration)
+            let eased = 1 - pow(1 - p, 3)
+            self.displayed = BarValues.lerp(start, target, eased)
+            self.setBarTitle(self.displayed)
+            if p >= 1 { timer.invalidate() }
+        }
+    }
+
+    func setBarNeedsUpdate(from a: BarValues, to b: BarValues) -> Bool {
+        if a.cost == b.cost && a.input == b.input && a.output == b.output && a.hit == b.hit {
+            setBarTitle(b)  // keep title in sync even when nothing changed (first draw)
+            return false
+        }
+        return true
     }
 
     func shortModel(_ model: String) -> String {
