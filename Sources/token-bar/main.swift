@@ -384,25 +384,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         // Plain title + trailing badge: native right-aligned value, uniform alignment
-        func stat(_ label: String, _ value: String) {
+        func statItem(_ label: String, _ value: String) -> NSMenuItem {
             let item = NSMenuItem(title: label, action: nil, keyEquivalent: "")
             item.isEnabled = true  // label color, not dimmed; inert (no action)
             item.badge = NSMenuItemBadge(string: value)
-            menu.addItem(item)
+            return item
+        }
+
+        // Submenu with the full stat block for one aggregate
+        func statsSubmenu(_ a: Agg, marker: String = "") -> NSMenu {
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            sub.addItem(statItem("Spend", fmtMoney(a.cost) + marker))
+            sub.addItem(statItem("Input", fmtTokens(a.input)))
+            sub.addItem(statItem("Output", fmtTokens(a.output)))
+            sub.addItem(statItem("Cache read", fmtTokens(a.cacheRead)))
+            sub.addItem(statItem("Cache write", fmtTokens(a.cacheWrite)))
+            sub.addItem(statItem("Cache hit", String(format: "%.0f%%", a.hitRate * 100)))
+            return sub
         }
 
         menu.addItem(NSMenuItem.sectionHeader(title: "Today"))
-        stat("Spend", fmtMoney(total.cost))
-        stat("Input", fmtTokens(total.input))
-        stat("Output", fmtTokens(total.output))
-        stat("Cache hit", String(format: "%.0f%%", total.hitRate * 100))
+        menu.addItem(statItem("Spend", fmtMoney(total.cost)))
+        menu.addItem(statItem("Input", fmtTokens(total.input)))
+        menu.addItem(statItem("Output", fmtTokens(total.output)))
+        menu.addItem(statItem("Cache hit", String(format: "%.0f%%", total.hitRate * 100)))
 
         let active = sources.filter { $0.available && ($0.agg.cost > 0 || $0.agg.contextTotal > 0 || $0.agg.output > 0) }
         for s in active {
             menu.addItem(NSMenuItem.sectionHeader(title: s.name))
             for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                 let marker = s.unknownPricing.contains(model) ? " ~" : ""
-                stat(shortModel(model), fmtMoney(a.cost) + marker)
+                let item = statItem(shortModel(model), fmtMoney(a.cost) + marker)
+                item.submenu = statsSubmenu(a, marker: marker)
+                menu.addItem(item)
+            }
+            if s.perModel.count > 1 {
+                let item = statItem("Total", fmtMoney(s.agg.cost))
+                item.submenu = statsSubmenu(s.agg)
+                menu.addItem(item)
             }
         }
 
