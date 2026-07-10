@@ -270,6 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pendingRefresh: DispatchWorkItem?
     var displayed = BarValues()
     var animTimer: Timer?
+    var statItems: [String: NSMenuItem] = [:]
+    var menuSignature = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -304,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             nil, callback, &ctx,
             paths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            0.3,  // coalesce events within 300ms
+            0.5,  // coalesce events within 500ms
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagNoDefer))
         else { return }
         FSEventStreamSetDispatchQueue(stream, .main)
@@ -317,7 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingRefresh?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.refresh() }
         pendingRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
@@ -378,50 +380,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.hasPrefix("claude-") ? String(model.dropFirst("claude-".count)) : model
     }
 
+    // The per-aggregate stat block as (label, value) pairs; shared by build and update
+    func statBlock(_ a: Agg, marker: String = "") -> [(String, String)] {
+        [("Spend", fmtMoney(a.cost) + marker),
+         ("Input", fmtTokens(a.input)),
+         ("Output", fmtTokens(a.output)),
+         ("Cache read", fmtTokens(a.cacheRead)),
+         ("Cache write", fmtTokens(a.cacheWrite)),
+         ("Cache hit", String(format: "%.0f%%", a.hitRate * 100))]
+    }
+
+    func activeSources(_ sources: [SourceStats]) -> [SourceStats] {
+        sources.filter { $0.available && ($0.agg.cost > 0 || $0.agg.contextTotal > 0 || $0.agg.output > 0) }
+    }
+
+    // Rebuild the menu only when its row structure changes (new model/source);
+    // otherwise update badges in place so an open menu never flickers.
     func rebuildMenu(total: Agg, sources: [SourceStats]) {
+        let active = activeSources(sources)
+        let signature = active.map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
+            .joined(separator: "|")
+        if signature == menuSignature && !statItems.isEmpty {
+            updateBadges(total: total, active: active)
+        } else {
+            buildMenu(total: total, active: active)
+            menuSignature = signature
+        }
+    }
+
+    func setBadge(_ key: String, _ value: String) {
+        guard let item = statItems[key] else { return }
+        if item.badge?.stringValue != value {
+            item.badge = NSMenuItemBadge(string: value)
+        }
+    }
+
+    func updateBadges(total: Agg, active: [SourceStats]) {
+        for (label, value) in statBlock(total) { setBadge("Today/\(label)", value) }
+        for s in active {
+            for (model, a) in s.perModel {
+                let marker = s.unknownPricing.contains(model) ? " ~" : ""
+                setBadge("\(s.name)/\(model)", fmtMoney(a.cost) + marker)
+                for (label, value) in statBlock(a, marker: marker) {
+                    setBadge("\(s.name)/\(model)/\(label)", value)
+                }
+            }
+            if s.perModel.count > 1 {
+                setBadge("\(s.name)/Total", fmtMoney(s.agg.cost))
+                for (label, value) in statBlock(s.agg) { setBadge("\(s.name)/Total/\(label)", value) }
+            }
+        }
+    }
+
+    func buildMenu(total: Agg, active: [SourceStats]) {
         guard let menu = statusItem.menu else { return }
         menu.autoenablesItems = false
         menu.removeAllItems()
+        statItems.removeAll()
 
         // Plain title + trailing badge: native right-aligned value, uniform alignment
-        func statItem(_ label: String, _ value: String) -> NSMenuItem {
+        func statItem(_ key: String, _ label: String, _ value: String) -> NSMenuItem {
             let item = NSMenuItem(title: label, action: nil, keyEquivalent: "")
             item.isEnabled = true  // label color, not dimmed; inert (no action)
             item.badge = NSMenuItemBadge(string: value)
+            statItems[key] = item
             return item
         }
 
         // Submenu with the full stat block for one aggregate
-        func statsSubmenu(_ a: Agg, marker: String = "") -> NSMenu {
+        func statsSubmenu(_ keyPrefix: String, _ a: Agg, marker: String = "") -> NSMenu {
             let sub = NSMenu()
             sub.autoenablesItems = false
-            sub.addItem(statItem("Spend", fmtMoney(a.cost) + marker))
-            sub.addItem(statItem("Input", fmtTokens(a.input)))
-            sub.addItem(statItem("Output", fmtTokens(a.output)))
-            sub.addItem(statItem("Cache read", fmtTokens(a.cacheRead)))
-            sub.addItem(statItem("Cache write", fmtTokens(a.cacheWrite)))
-            sub.addItem(statItem("Cache hit", String(format: "%.0f%%", a.hitRate * 100)))
+            for (label, value) in statBlock(a, marker: marker) {
+                sub.addItem(statItem("\(keyPrefix)/\(label)", label, value))
+            }
             return sub
         }
 
         menu.addItem(NSMenuItem.sectionHeader(title: "Today"))
-        menu.addItem(statItem("Spend", fmtMoney(total.cost)))
-        menu.addItem(statItem("Input", fmtTokens(total.input)))
-        menu.addItem(statItem("Output", fmtTokens(total.output)))
-        menu.addItem(statItem("Cache hit", String(format: "%.0f%%", total.hitRate * 100)))
+        for (label, value) in statBlock(total) where label != "Cache read" && label != "Cache write" {
+            menu.addItem(statItem("Today/\(label)", label, value))
+        }
 
-        let active = sources.filter { $0.available && ($0.agg.cost > 0 || $0.agg.contextTotal > 0 || $0.agg.output > 0) }
         for s in active {
             menu.addItem(NSMenuItem.sectionHeader(title: s.name))
             for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                 let marker = s.unknownPricing.contains(model) ? " ~" : ""
-                let item = statItem(shortModel(model), fmtMoney(a.cost) + marker)
-                item.submenu = statsSubmenu(a, marker: marker)
+                let item = statItem("\(s.name)/\(model)", shortModel(model), fmtMoney(a.cost) + marker)
+                item.submenu = statsSubmenu("\(s.name)/\(model)", a, marker: marker)
                 menu.addItem(item)
             }
             if s.perModel.count > 1 {
-                let item = statItem("Total", fmtMoney(s.agg.cost))
-                item.submenu = statsSubmenu(s.agg)
+                let item = statItem("\(s.name)/Total", "Total", fmtMoney(s.agg.cost))
+                item.submenu = statsSubmenu("\(s.name)/Total", s.agg)
                 menu.addItem(item)
             }
         }
