@@ -236,7 +236,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
+    var menuIsOpen = false
+    var pendingBar: BarValues?
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        refresh()
+    }
+
+    // Bar updates are deferred while the menu is open: resizing the status
+    // item moves the menu's anchor, so the whole panel would jump sideways
+    // on every period switch. The panel shows the live numbers meanwhile.
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        if let target = pendingBar {
+            pendingBar = nil
+            animateBar(to: target)
+        }
+    }
 
     @objc func quitClicked() { NSApp.terminate(nil) }
 
@@ -295,6 +312,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Roll the bar through intermediate values (ease-out, ~0.8s)
     func animateBar(to target: BarValues) {
+        if menuIsOpen {
+            pendingBar = target
+            return
+        }
         animTimer?.invalidate()
         let start = displayed
         guard start != target else {
