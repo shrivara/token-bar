@@ -355,8 +355,11 @@ final class BucketSpecTests: FixtureTestCase {
     func testDailyBucketsForWeekView() throws {
         let weekStart = Date().addingTimeInterval(-3 * 86_400)
         let spec = BucketSpec.spans(of: 86_400, count: 7, from: weekStart)
+        // Mid-bucket timestamp: an on-the-boundary date can flip buckets after
+        // millisecond-precision ISO serialization
+        let midBucket3 = weekStart.addingTimeInterval(3 * 86_400 + 1800)
         let d: [String: Any] = [
-            "type": "assistant", "timestamp": iso(Date()), "requestId": "r1",
+            "type": "assistant", "timestamp": iso(midBucket3), "requestId": "r1",
             "message": ["id": "m1", "model": "claude-fable-5",
                         "usage": ["input_tokens": 0, "output_tokens": 1_000_000,
                                   "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]],
