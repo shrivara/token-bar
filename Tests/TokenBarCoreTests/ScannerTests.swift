@@ -379,3 +379,23 @@ final class BucketSpecTests: FixtureTestCase {
         XCTAssertEqual(spec.index(Date().addingTimeInterval(3700)), 1)
     }
 }
+
+// MARK: - Data coverage
+
+final class OldestDataTests: FixtureTestCase {
+    func testReturnsNilWhenNoData() {
+        let empty = tmp.appendingPathComponent("none")
+        XCTAssertNil(oldestDataDate(claudeRoot: empty, openCodeDB: empty, piRoot: empty))
+    }
+
+    func testReturnsOldestFileMtime() throws {
+        let old = Date().addingTimeInterval(-40 * 86_400)
+        try write(["{}"], to: "claude/a.jsonl", mtime: old)
+        try write(["{}"], to: "claude/b.jsonl")  // fresh
+        let missing = tmp.appendingPathComponent("none")
+        let oldest = oldestDataDate(claudeRoot: tmp.appendingPathComponent("claude"),
+                                    openCodeDB: missing, piRoot: missing)
+        XCTAssertNotNil(oldest)
+        XCTAssertEqual(oldest!.timeIntervalSince1970, old.timeIntervalSince1970, accuracy: 2)
+    }
+}

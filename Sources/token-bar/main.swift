@@ -158,6 +158,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
     var scanPending = false
+    var dataSince: Date?
+
+    // "this year · since Jun 13" when logs don't reach back to the period start
+    // (tools prune: Claude Code keeps ~30 days of transcripts by default)
+    func periodTitle() -> String {
+        guard period != .day, let since = dataSince,
+              since > period.start(cal: Calendar.current, now: Date()).addingTimeInterval(86_400)
+        else { return period.title }
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return "\(period.title) · since \(f.string(from: since))"
+    }
 
     // Run a block on the main thread in common run-loop modes. Unlike
     // DispatchQueue.main.async, this also executes while a menu is open
@@ -259,8 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let sources = self.scanAll(since: periodStart, buckets: spec)
             var total = Agg()
             for s in sources { total.add(s.agg) }
+            let oldest = oldestDataDate()
 
             self.performOnMain {
+                self.dataSince = oldest
                 // Bar and panel both show the selected period
                 self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                               output: total.output, hit: total.hitRate))
@@ -359,6 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateFields(total: Agg, active: [SourceStats]) {
         setField("Spend", fmtMoney(total.cost))
         setField("Tokens", tokensLine(total))
+        setField("PeriodLabel", periodTitle())
         sparkView?.values = totalBuckets(active)
         for s in active {
             for (model, a) in s.perModel {
@@ -417,7 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
-        let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
+        let periodLabel = label("PeriodLabel", periodTitle(), size: 12, color: .secondaryLabelColor)
 
         let switcher = NSStackView()
         switcher.orientation = .horizontal

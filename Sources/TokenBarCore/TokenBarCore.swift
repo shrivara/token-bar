@@ -313,6 +313,39 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
     return s
 }
 
+// MARK: - Data coverage
+
+/// Approximate date of the oldest usage data on disk (file mtimes for the
+/// JSONL sources, oldest row for OpenCode). Tools prune their logs (Claude
+/// Code keeps ~30 days by default), so long periods may be partially covered.
+public func oldestDataDate(claudeRoot: URL = claudeProjectsRoot,
+                           openCodeDB: URL = openCodeDBPath,
+                           piRoot: URL = piSessionsRoot) -> Date? {
+    var dates: [Date] = []
+    for root in [claudeRoot, piRoot] {
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+        for case let url as URL in en where url.pathExtension == "jsonl" {
+            if let m = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
+                dates.append(m)
+            }
+        }
+    }
+    if fm.fileExists(atPath: openCodeDB.path) {
+        var db: OpaquePointer?
+        if sqlite3_open_v2(openCodeDB.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "SELECT MIN(time_created) FROM message", -1, &stmt, nil) == SQLITE_OK,
+               sqlite3_step(stmt) == SQLITE_ROW {
+                let ms = sqlite3_column_int64(stmt, 0)
+                if ms > 0 { dates.append(Date(timeIntervalSince1970: Double(ms) / 1000)) }
+            }
+            sqlite3_finalize(stmt)
+        }
+        sqlite3_close(db)
+    }
+    return dates.min()
+}
+
 // MARK: - Bar animation values
 
 public struct BarValues: Equatable {
