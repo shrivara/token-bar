@@ -270,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pendingRefresh: DispatchWorkItem?
     var displayed = BarValues()
     var animTimer: Timer?
-    var statItems: [String: NSMenuItem] = [:]
+    var statFields: [String: NSTextField] = [:]
     var menuSignature = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -380,55 +380,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.hasPrefix("claude-") ? String(model.dropFirst("claude-".count)) : model
     }
 
-    // The per-aggregate stat block as (label, value) pairs; shared by build and update
-    func statBlock(_ a: Agg, marker: String = "") -> [(String, String)] {
-        [("Spend", fmtMoney(a.cost) + marker),
-         ("Input", fmtTokens(a.input)),
-         ("Output", fmtTokens(a.output)),
-         ("Cache read", fmtTokens(a.cacheRead)),
-         ("Cache write", fmtTokens(a.cacheWrite)),
-         ("Cache hit", String(format: "%.0f%%", a.hitRate * 100))]
-    }
-
     func activeSources(_ sources: [SourceStats]) -> [SourceStats] {
         sources.filter { $0.available && ($0.agg.cost > 0 || $0.agg.contextTotal > 0 || $0.agg.output > 0) }
     }
 
-    // Rebuild the menu only when its row structure changes (new model/source);
-    // otherwise update badges in place so an open menu never flickers.
+    func tokensLine(_ a: Agg) -> String {
+        "\(fmtTokens(a.input))↑  \(fmtTokens(a.output))↓   \(String(format: "%.0f%%", a.hitRate * 100)) cache"
+    }
+
+    // Rebuild the panel only when its row structure changes (new model/source);
+    // otherwise update the text fields in place so an open menu never flickers.
     func rebuildMenu(total: Agg, sources: [SourceStats]) {
         let active = activeSources(sources)
         let signature = active.map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
             .joined(separator: "|")
-        if signature == menuSignature && !statItems.isEmpty {
-            updateBadges(total: total, active: active)
+        if signature == menuSignature && !statFields.isEmpty {
+            updateFields(total: total, active: active)
         } else {
             buildMenu(total: total, active: active)
             menuSignature = signature
         }
     }
 
-    func setBadge(_ key: String, _ value: String) {
-        guard let item = statItems[key] else { return }
-        if item.badge?.stringValue != value {
-            item.badge = NSMenuItemBadge(string: value)
-        }
+    func setField(_ key: String, _ value: String) {
+        guard let f = statFields[key], f.stringValue != value else { return }
+        f.stringValue = value
     }
 
-    func updateBadges(total: Agg, active: [SourceStats]) {
-        for (label, value) in statBlock(total) { setBadge("Today/\(label)", value) }
+    func updateFields(total: Agg, active: [SourceStats]) {
+        setField("Today/Spend", fmtMoney(total.cost))
+        setField("Today/Tokens", tokensLine(total))
         for s in active {
             for (model, a) in s.perModel {
-                let marker = s.unknownPricing.contains(model) ? " ~" : ""
-                setBadge("\(s.name)/\(model)", fmtMoney(a.cost) + marker)
-                for (label, value) in statBlock(a, marker: marker) {
-                    setBadge("\(s.name)/\(model)/\(label)", value)
-                }
+                let marker = s.unknownPricing.contains(model) ? "~" : ""
+                setField("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost))
+                setField("\(s.name)/\(model)/Input", fmtTokens(a.input))
+                setField("\(s.name)/\(model)/Output", fmtTokens(a.output))
             }
-            if s.perModel.count > 1 {
-                setBadge("\(s.name)/Total", fmtMoney(s.agg.cost))
-                for (label, value) in statBlock(s.agg) { setBadge("\(s.name)/Total/\(label)", value) }
-            }
+        }
+        // Re-measure in case a value grew wider than the panel was sized for
+        if let panel = statusItem.menu?.items.first?.view {
+            panel.layoutSubtreeIfNeeded()
+            var size = panel.fittingSize
+            size.width = max(size.width, 230)
+            if size != panel.frame.size { panel.setFrameSize(size) }
         }
     }
 
@@ -436,46 +431,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let menu = statusItem.menu else { return }
         menu.autoenablesItems = false
         menu.removeAllItems()
-        statItems.removeAll()
+        statFields.removeAll()
 
-        // Plain title + trailing badge: native right-aligned value, uniform alignment
-        func statItem(_ key: String, _ label: String, _ value: String) -> NSMenuItem {
-            let item = NSMenuItem(title: label, action: nil, keyEquivalent: "")
-            item.isEnabled = true  // label color, not dimmed; inert (no action)
-            item.badge = NSMenuItemBadge(string: value)
-            statItems[key] = item
-            return item
+        func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
+                   color: NSColor = .labelColor, mono: Bool = false, align: NSTextAlignment = .left) -> NSTextField {
+            let f = NSTextField(labelWithString: text)
+            f.font = mono ? .monospacedDigitSystemFont(ofSize: size, weight: weight)
+                          : .systemFont(ofSize: size, weight: weight)
+            f.textColor = color
+            f.alignment = align
+            if let key = key { statFields[key] = f }
+            return f
         }
 
-        // Submenu with the full stat block for one aggregate
-        func statsSubmenu(_ keyPrefix: String, _ a: Agg, marker: String = "") -> NSMenu {
-            let sub = NSMenu()
-            sub.autoenablesItems = false
-            for (label, value) in statBlock(a, marker: marker) {
-                sub.addItem(statItem("\(keyPrefix)/\(label)", label, value))
+        let panel = NSStackView()
+        panel.orientation = .vertical
+        panel.alignment = .leading
+        panel.spacing = 4
+        panel.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+
+        // Header: big spend, then the token summary line
+        let spend = label("Today/Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
+        let today = label(nil, "today", size: 12, color: .secondaryLabelColor)
+        let headerRow = NSStackView(views: [spend, today])
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .lastBaseline
+        headerRow.spacing = 6
+        panel.addArrangedSubview(headerRow)
+        panel.addArrangedSubview(label("Today/Tokens", tokensLine(total), size: 12,
+                                       color: .secondaryLabelColor, mono: true))
+
+        // Per-source model table
+        if !active.isEmpty {
+            var rows: [[NSView]] = []
+            for s in active {
+                rows.append([label(nil, s.name.uppercased(), size: 10, weight: .medium,
+                                   color: .tertiaryLabelColor),
+                             NSView(), NSView(), NSView()])
+                for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
+                    let marker = s.unknownPricing.contains(model) ? "~" : ""
+                    rows.append([
+                        label(nil, shortModel(model), size: 12),
+                        label("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost), size: 12,
+                              color: .secondaryLabelColor, mono: true, align: .right),
+                        label("\(s.name)/\(model)/Input", fmtTokens(a.input), size: 12,
+                              color: .secondaryLabelColor, mono: true, align: .right),
+                        label("\(s.name)/\(model)/Output", fmtTokens(a.output), size: 12,
+                              color: .secondaryLabelColor, mono: true, align: .right),
+                    ])
+                }
             }
-            return sub
+            let grid = NSGridView(views: rows)
+            grid.rowSpacing = 3
+            grid.columnSpacing = 14
+            for col in 1..<4 { grid.column(at: col).xPlacement = .trailing }
+            panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
+            panel.addArrangedSubview(grid)
+
+            // Column captions under the header of the first source? Keep it clean:
+            // in/out meaning is carried by the arrows in the summary line above.
         }
 
-        menu.addItem(NSMenuItem.sectionHeader(title: "Today"))
-        for (label, value) in statBlock(total) where label != "Cache read" && label != "Cache write" {
-            menu.addItem(statItem("Today/\(label)", label, value))
-        }
+        panel.layoutSubtreeIfNeeded()
+        var size = panel.fittingSize
+        size.width = max(size.width, 230)
+        panel.setFrameSize(size)
 
-        for s in active {
-            menu.addItem(NSMenuItem.sectionHeader(title: s.name))
-            for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
-                let marker = s.unknownPricing.contains(model) ? " ~" : ""
-                let item = statItem("\(s.name)/\(model)", shortModel(model), fmtMoney(a.cost) + marker)
-                item.submenu = statsSubmenu("\(s.name)/\(model)", a, marker: marker)
-                menu.addItem(item)
-            }
-            if s.perModel.count > 1 {
-                let item = statItem("\(s.name)/Total", "Total", fmtMoney(s.agg.cost))
-                item.submenu = statsSubmenu("\(s.name)/Total", s.agg)
-                menu.addItem(item)
-            }
-        }
+        let panelItem = NSMenuItem()
+        panelItem.view = panel
+        menu.addItem(panelItem)
 
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
