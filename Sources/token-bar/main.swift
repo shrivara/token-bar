@@ -152,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 setField("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost))
                 setField("\(s.name)/\(model)/Input", fmtTokens(a.input))
                 setField("\(s.name)/\(model)/Output", fmtTokens(a.output))
+                setField("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100))
             }
         }
         // Re-measure in case a value grew wider than the panel was sized for
@@ -207,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 headerRowIndices.append(rows.count)
                 rows.append([label(nil, s.name.uppercased(), size: 10, weight: .medium,
                                    color: .tertiaryLabelColor),
-                             NSView(), NSView(), NSView()])
+                             NSView(), NSView(), NSView(), NSView()])
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                     let marker = s.unknownPricing.contains(model) ? "~" : ""
                     rows.append([
@@ -218,13 +219,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                               color: .secondaryLabelColor, mono: true, align: .right),
                         label("\(s.name)/\(model)/Output", fmtTokens(a.output), size: 12,
                               color: .secondaryLabelColor, mono: true, align: .right),
+                        label("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100), size: 12,
+                              color: .secondaryLabelColor, mono: true, align: .right),
                     ])
                 }
             }
             let grid = NSGridView(views: rows)
             grid.rowSpacing = 3
             grid.columnSpacing = 14
-            for col in 1..<4 { grid.column(at: col).xPlacement = .trailing }
+            for col in 1..<5 { grid.column(at: col).xPlacement = .trailing }
             // A header binds to the rows below it: generous space above,
             // a small fixed gap below, uniform row spacing within a section.
             for i in headerRowIndices {
