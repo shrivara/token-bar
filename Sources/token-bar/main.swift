@@ -5,25 +5,41 @@ import AppKit
 import CoreServices
 import TokenBarCore
 
-// 24 hourly spend bars, sparkline-sized
+// 24 hourly spend bars, sparkline-sized, with an hour axis (0 6 12 18 24)
 final class SparkBarView: NSView {
     var values = [Double](repeating: 0, count: 24) {
         didSet { if values != oldValue { needsDisplay = true } }
     }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16) }
+    let axisHeight: CGFloat = 11
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16 + axisHeight) }
 
     override func draw(_ dirtyRect: NSRect) {
         let maxV = max(values.max() ?? 0, .leastNonzeroMagnitude)
         let n = CGFloat(values.count)
         let gap: CGFloat = 2
         let bw = (bounds.width - gap * (n - 1)) / n
+        let barArea = bounds.height - axisHeight
+
         for (i, v) in values.enumerated() {
-            let h = v > 0 ? max(2, CGFloat(v / maxV) * bounds.height) : 1.5
-            let rect = NSRect(x: CGFloat(i) * (bw + gap), y: 0, width: bw, height: h)
+            let h = v > 0 ? max(2, CGFloat(v / maxV) * barArea) : 1.5
+            let rect = NSRect(x: CGFloat(i) * (bw + gap), y: axisHeight, width: bw, height: h)
             let alpha: CGFloat = v > 0 ? 0.55 : 0.12
             NSColor.labelColor.withAlphaComponent(alpha).setFill()
             NSBezierPath(roundedRect: rect, xRadius: bw / 3, yRadius: bw / 3).fill()
+        }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]
+        for hour in [0, 6, 12, 18, 24] {
+            let text = "\(hour)" as NSString
+            let w = text.size(withAttributes: attrs).width
+            let tick = CGFloat(hour) * (bw + gap)  // leading edge of that hour's bar
+            let x = hour == 0 ? 0 : hour == 24 ? bounds.width - w : tick - w / 2
+            text.draw(at: NSPoint(x: x, y: 0), withAttributes: attrs)
         }
     }
 }
