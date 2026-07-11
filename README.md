@@ -3,7 +3,7 @@
 A minimal macOS menu bar app showing today's AI usage: spend, tokens in/out, and cache hit rate.
 
 <p align="center">
-  <img src="docs/screenshot.png" width="296" alt="token-bar in the menu bar with its dropdown panel open, showing today's spend, tokens, cache hit rate, and a per-model breakdown">
+  <img src="docs/screenshot.png" width="367" alt="token-bar in the menu bar with its dropdown panel open, showing today's spend, tokens, cache hit rate, and a per-model breakdown">
 </p>
 
 The numbers roll odometer-style whenever new usage lands. Click the item for a panel with the day's totals and a per-tool, per-model breakdown.
