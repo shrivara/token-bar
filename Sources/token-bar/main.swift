@@ -155,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var sparkView: SparkBarView?
     var panelView: NSStackView?
     var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
+    let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
+    var scanning = false
+    var scanPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -221,26 +224,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
          scanPi(since: since, buckets: buckets)]
     }
 
+    // Scans run on a background queue (a year-view scan reads every log file;
+    // doing that on the main thread on every file event made the UI lag).
+    // In-flight scans coalesce: at most one queued behind the current one.
     func refresh() {
+        if scanning { scanPending = true; return }
+        scanning = true
+
         let cal = Calendar.current
         let now = Date()
+        let period = self.period
         let periodStart = period.start(cal: cal, now: now)
         let spec = period.bucketSpec(start: periodStart, cal: cal, now: now)
 
-        let sources = scanAll(since: periodStart, buckets: spec)
-        var total = Agg()
-        for s in sources { total.add(s.agg) }
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            let sources = self.scanAll(since: periodStart, buckets: spec)
+            var total = Agg()
+            for s in sources { total.add(s.agg) }
 
-        // The menu bar always shows today, whatever the panel period is
-        var todayTotal = total
-        if period != .day {
-            todayTotal = Agg()
-            for s in scanAll(since: cal.startOfDay(for: now), buckets: nil) { todayTotal.add(s.agg) }
+            DispatchQueue.main.async {
+                // Bar and panel both show the selected period
+                self.animateBar(to: BarValues(cost: total.cost, input: total.input,
+                                              output: total.output, hit: total.hitRate))
+                self.rebuildMenu(total: total, sources: sources)
+                self.scanning = false
+                if self.scanPending {
+                    self.scanPending = false
+                    self.refresh()
+                }
+            }
         }
-        animateBar(to: BarValues(cost: todayTotal.cost, input: todayTotal.input,
-                                 output: todayTotal.output, hit: todayTotal.hitRate))
-
-        rebuildMenu(total: total, sources: sources)
     }
 
     func setBarTitle(_ v: BarValues) {
