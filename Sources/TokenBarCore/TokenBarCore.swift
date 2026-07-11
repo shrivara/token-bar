@@ -39,6 +39,9 @@ public struct SourceStats {
     public var unknownPricing: Set<String> = []
     /// Spend per time bucket (see BucketSpec; defaults to 24 hours from the scan start)
     public var buckets: [Double] = []
+    /// Approximate date of this source's oldest data on disk (tools prune their
+    /// logs; Claude Code keeps ~30 days by default), regardless of scan period
+    public var dataSince: Date?
 
     public init(name: String) { self.name = name }
 
@@ -144,12 +147,13 @@ func jsonObject(_ line: String) -> [String: Any]? {
     return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 }
 
-func jsonlFiles(under root: URL, modifiedAfter cutoff: Date) -> [URL] {
+/// All .jsonl files with their mtimes; callers filter and take min as needed
+func jsonlFilesWithDates(under root: URL) -> [(url: URL, mtime: Date)] {
     guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
-    var out: [URL] = []
+    var out: [(URL, Date)] = []
     for case let url as URL in en where url.pathExtension == "jsonl" {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-        if mtime >= cutoff { out.append(url) }
+        out.append((url, mtime))
     }
     return out
 }
@@ -176,9 +180,12 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
     guard fm.fileExists(atPath: root.path) else { return s }
     s.available = true
 
+    let files = jsonlFilesWithDates(under: root)
+    s.dataSince = files.map(\.mtime).min()
+
     // Streaming rewrites the same request multiple times; keep the last entry per request+message.
     var dedup: [String: (model: String, usage: [String: Any], date: Date)] = [:]
-    for file in jsonlFiles(under: root, modifiedAfter: dayStart) {
+    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let d = jsonObject(String(line)),
@@ -245,6 +252,14 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
     }
     defer { sqlite3_close(db) }
 
+    var minStmt: OpaquePointer?
+    if sqlite3_prepare_v2(db, "SELECT MIN(time_created) FROM message", -1, &minStmt, nil) == SQLITE_OK,
+       sqlite3_step(minStmt) == SQLITE_ROW {
+        let ms = sqlite3_column_int64(minStmt, 0)
+        if ms > 0 { s.dataSince = Date(timeIntervalSince1970: Double(ms) / 1000) }
+    }
+    sqlite3_finalize(minStmt)
+
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, "SELECT data FROM message WHERE time_created >= ?", -1, &stmt, nil) == SQLITE_OK else { return s }
     defer { sqlite3_finalize(stmt) }
@@ -283,7 +298,10 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
     guard fm.fileExists(atPath: root.path) else { return s }
     s.available = true
 
-    for file in jsonlFiles(under: root, modifiedAfter: dayStart) {
+    let files = jsonlFilesWithDates(under: root)
+    s.dataSince = files.map(\.mtime).min()
+
+    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let d = jsonObject(String(line)),
@@ -311,39 +329,6 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
     }
     s.finishTotals()
     return s
-}
-
-// MARK: - Data coverage
-
-/// Approximate date of the oldest usage data on disk (file mtimes for the
-/// JSONL sources, oldest row for OpenCode). Tools prune their logs (Claude
-/// Code keeps ~30 days by default), so long periods may be partially covered.
-public func oldestDataDate(claudeRoot: URL = claudeProjectsRoot,
-                           openCodeDB: URL = openCodeDBPath,
-                           piRoot: URL = piSessionsRoot) -> Date? {
-    var dates: [Date] = []
-    for root in [claudeRoot, piRoot] {
-        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-        for case let url as URL in en where url.pathExtension == "jsonl" {
-            if let m = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
-                dates.append(m)
-            }
-        }
-    }
-    if fm.fileExists(atPath: openCodeDB.path) {
-        var db: OpaquePointer?
-        if sqlite3_open_v2(openCodeDB.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT MIN(time_created) FROM message", -1, &stmt, nil) == SQLITE_OK,
-               sqlite3_step(stmt) == SQLITE_ROW {
-                let ms = sqlite3_column_int64(stmt, 0)
-                if ms > 0 { dates.append(Date(timeIntervalSince1970: Double(ms) / 1000)) }
-            }
-            sqlite3_finalize(stmt)
-        }
-        sqlite3_close(db)
-    }
-    return dates.min()
 }
 
 // MARK: - Bar animation values

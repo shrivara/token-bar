@@ -380,22 +380,36 @@ final class BucketSpecTests: FixtureTestCase {
     }
 }
 
-// MARK: - Data coverage
+// MARK: - Data coverage (per source)
 
-final class OldestDataTests: FixtureTestCase {
-    func testReturnsNilWhenNoData() {
-        let empty = tmp.appendingPathComponent("none")
-        XCTAssertNil(oldestDataDate(claudeRoot: empty, openCodeDB: empty, piRoot: empty))
+final class DataSinceTests: FixtureTestCase {
+    func testNilWhenSourceHasNoFiles() {
+        XCTAssertNil(scanClaudeCode(since: dayStart, root: tmp).dataSince)
     }
 
-    func testReturnsOldestFileMtime() throws {
+    func testOldestFileMtimeEvenOutsideScanPeriod() throws {
         let old = Date().addingTimeInterval(-40 * 86_400)
-        try write(["{}"], to: "claude/a.jsonl", mtime: old)
-        try write(["{}"], to: "claude/b.jsonl")  // fresh
-        let missing = tmp.appendingPathComponent("none")
-        let oldest = oldestDataDate(claudeRoot: tmp.appendingPathComponent("claude"),
-                                    openCodeDB: missing, piRoot: missing)
-        XCTAssertNotNil(oldest)
-        XCTAssertEqual(oldest!.timeIntervalSince1970, old.timeIntervalSince1970, accuracy: 2)
+        try write(["{}"], to: "p/a.jsonl", mtime: old)  // prune boundary marker
+        try write(["{}"], to: "p/b.jsonl")              // fresh
+        let s = scanClaudeCode(since: dayStart, root: tmp)
+        XCTAssertNotNil(s.dataSince)
+        XCTAssertEqual(s.dataSince!.timeIntervalSince1970, old.timeIntervalSince1970, accuracy: 2)
+    }
+
+    func testOpenCodeUsesOldestRow() throws {
+        let old = Date().addingTimeInterval(-100 * 86_400)
+        let dbURL = tmp.appendingPathComponent("opencode.db")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        sqlite3_exec(db, """
+            CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
+                time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)
+            """, nil, nil, nil)
+        let ms = Int64(old.timeIntervalSince1970 * 1000)
+        sqlite3_exec(db, "INSERT INTO message VALUES ('m1','s1',\(ms),\(ms),'{}')", nil, nil, nil)
+        sqlite3_close(db)
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
+        XCTAssertNotNil(s.dataSince)
+        XCTAssertEqual(s.dataSince!.timeIntervalSince1970, old.timeIntervalSince1970, accuracy: 2)
     }
 }

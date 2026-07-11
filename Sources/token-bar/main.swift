@@ -158,17 +158,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
     var scanPending = false
-    var dataSince: Date?
-
-    // "this year · since Jun 13" when logs don't reach back to the period start
-    // (tools prune: Claude Code keeps ~30 days of transcripts by default)
-    func periodTitle() -> String {
-        guard period != .day, let since = dataSince,
+    // Coverage is per-source: Claude Code prunes logs after ~30 days while
+    // OpenCode keeps everything, so a shared note would misstate one of them.
+    // Each harness header gets "· since Jun 13" only when ITS data falls short
+    // of the selected period.
+    func headerTitle(for s: SourceStats) -> String {
+        guard period != .day, let since = s.dataSince,
               since > period.start(cal: Calendar.current, now: Date()).addingTimeInterval(86_400)
-        else { return period.title }
+        else { return s.name.uppercased() }
         let f = DateFormatter()
         f.dateFormat = "MMM d"
-        return "\(period.title) · since \(f.string(from: since))"
+        return "\(s.name.uppercased()) · since \(f.string(from: since))"
     }
 
     // Run a block on the main thread in common run-loop modes. Unlike
@@ -271,10 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let sources = self.scanAll(since: periodStart, buckets: spec)
             var total = Agg()
             for s in sources { total.add(s.agg) }
-            let oldest = oldestDataDate()
-
             self.performOnMain {
-                self.dataSince = oldest
                 // Bar and panel both show the selected period
                 self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                               output: total.output, hit: total.hitRate))
@@ -373,7 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateFields(total: Agg, active: [SourceStats]) {
         setField("Spend", fmtMoney(total.cost))
         setField("Tokens", tokensLine(total))
-        setField("PeriodLabel", periodTitle())
+        for s in active { setField("\(s.name)/Header", headerTitle(for: s)) }
         sparkView?.values = totalBuckets(active)
         for s in active {
             for (model, a) in s.perModel {
@@ -432,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
-        let periodLabel = label("PeriodLabel", periodTitle(), size: 12, color: .secondaryLabelColor)
+        let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
 
         let switcher = NSStackView()
         switcher.orientation = .horizontal
@@ -485,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 func caption(_ t: String) -> NSTextField {
                     label(nil, t, size: 10, color: .tertiaryLabelColor, align: .right)
                 }
-                rows.append([label(nil, s.name.uppercased(), size: 10, weight: .medium,
+                rows.append([label("\(s.name)/Header", headerTitle(for: s), size: 10, weight: .medium,
                                    color: .tertiaryLabelColor),
                              caption("spend"), caption("in"), caption("out"), caption("hit")])
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
