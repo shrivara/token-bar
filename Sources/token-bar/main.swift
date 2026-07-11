@@ -37,6 +37,22 @@ final class SparkBarView: NSView {
             peakText.draw(at: NSPoint(x: bounds.width - w, y: captionY), withAttributes: tiny)
         }
 
+        // Dashed gridlines at the peak (which the tallest bar touches) and halfway
+        func dashedLine(at y: CGFloat, alpha: CGFloat) {
+            let p = NSBezierPath()
+            p.move(to: NSPoint(x: 0, y: y))
+            p.line(to: NSPoint(x: bounds.width, y: y))
+            p.lineWidth = 0.5
+            var pattern: [CGFloat] = [2, 3]
+            p.setLineDash(&pattern, count: 2, phase: 0)
+            NSColor.labelColor.withAlphaComponent(alpha).setStroke()
+            p.stroke()
+        }
+        if (values.max() ?? 0) > 0 {
+            dashedLine(at: axisHeight + barArea, alpha: 0.3)       // peak, labeled above right
+            dashedLine(at: axisHeight + barArea / 2, alpha: 0.15)  // half scale
+        }
+
         for (i, v) in values.enumerated() {
             let h = v > 0 ? max(2, CGFloat(v / maxV) * barArea) : 1.5
             let rect = NSRect(x: CGFloat(i) * (bw + gap), y: axisHeight, width: bw, height: h)
