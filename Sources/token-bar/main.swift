@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
     var eventStream: FSEventStreamRef?
-    var pendingRefresh: DispatchWorkItem?
+    var pendingRefreshTimer: Timer?
     var displayed = BarValues()
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
@@ -159,6 +159,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var scanning = false
     var scanPending = false
 
+    // Run a block on the main thread in common run-loop modes. Unlike
+    // DispatchQueue.main.async, this also executes while a menu is open
+    // (menu tracking parks the run loop in the event-tracking mode, which
+    // never drains the main GCD queue).
+    func performOnMain(_ block: @escaping () -> Void) {
+        RunLoop.main.perform(inModes: [.common], block: block)
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+
+    // Timer that keeps firing while a menu is open
+    func commonModesTimer(interval: TimeInterval, repeats: Bool, _ fire: @escaping () -> Void) -> Timer {
+        let t = Timer(timeInterval: interval, repeats: repeats) { _ in fire() }
+        RunLoop.main.add(t, forMode: .common)
+        return t
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -167,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
         startWatching()
         // Fallback: catches midnight rollover, missed events, and dirs created after launch
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        timer = commonModesTimer(interval: 60, repeats: true) { [weak self] in
             self?.refresh()
         }
     }
@@ -185,7 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             retain: nil, release: nil, copyDescription: nil)
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info = info else { return }
-            Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue().scheduleRefresh()
+            let me = Unmanaged<AppDelegate>.fromOpaque(info).takeUnretainedValue()
+            me.performOnMain { me.scheduleRefresh() }
         }
         guard let stream = FSEventStreamCreate(
             nil, callback, &ctx,
@@ -194,17 +211,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             0.5,  // coalesce events within 500ms
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagNoDefer))
         else { return }
-        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamSetDispatchQueue(stream, scanQueue)
         FSEventStreamStart(stream)
         eventStream = stream
     }
 
-    // Debounce bursts of file events into a single rescan
+    // Debounce bursts of file events into a single rescan (runs on main)
     func scheduleRefresh() {
-        pendingRefresh?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.refresh() }
-        pendingRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        pendingRefreshTimer?.invalidate()
+        pendingRefreshTimer = commonModesTimer(interval: 0.5, repeats: false) { [weak self] in
+            self?.refresh()
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() }
@@ -243,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var total = Agg()
             for s in sources { total.add(s.agg) }
 
-            DispatchQueue.main.async {
+            self.performOnMain {
                 // Bar and panel both show the selected period
                 self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                               output: total.output, hit: total.hitRate))
@@ -276,13 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let duration = 0.8
         let t0 = Date()
-        animTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
-            guard let self = self else { timer.invalidate(); return }
+        animTimer = commonModesTimer(interval: 1.0 / 30.0, repeats: true) { [weak self] in
+            guard let self = self else { return }
             let p = min(1, Date().timeIntervalSince(t0) / duration)
             let eased = 1 - pow(1 - p, 3)
             self.displayed = BarValues.lerp(start, target, eased)
             self.setBarTitle(self.displayed)
-            if p >= 1 { timer.invalidate() }
+            if p >= 1 { self.animTimer?.invalidate() }
         }
     }
 
