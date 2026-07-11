@@ -422,7 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let panel = statusItem.menu?.items.first?.view {
             panel.layoutSubtreeIfNeeded()
             var size = panel.fittingSize
-            size.width = max(size.width, 230)
+            size.width = max(size.width + 16, 250)
+            size.height += 4
             if size != panel.frame.size { panel.setFrameSize(size) }
         }
     }
@@ -494,7 +495,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         panel.layoutSubtreeIfNeeded()
         var size = panel.fittingSize
-        size.width = max(size.width, 230)
+        // fittingSize can under-measure a detached stack view; pad so the
+        // trailing column and descenders never clip
+        size.width = max(size.width + 16, 250)
+        size.height += 4
         panel.setFrameSize(size)
 
         let panelItem = NSMenuItem()
