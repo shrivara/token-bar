@@ -37,12 +37,19 @@ public struct SourceStats {
     public var agg = Agg()
     public var perModel: [String: Agg] = [:]
     public var unknownPricing: Set<String> = []
+    /// Spend per hour of the day (24 buckets from dayStart)
+    public var hourly = [Double](repeating: 0, count: 24)
 
     public init(name: String) { self.name = name }
 
     mutating func finishTotals() {
         for (_, a) in perModel { agg.add(a) }
     }
+}
+
+func hourIndex(_ date: Date, since dayStart: Date) -> Int? {
+    let h = Int(date.timeIntervalSince(dayStart) / 3600)
+    return (0..<24).contains(h) ? h : nil
 }
 
 // MARK: - Claude pricing (per MTok; Claude API reference, cached 2026-06-24)
@@ -148,7 +155,7 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
     s.available = true
 
     // Streaming rewrites the same request multiple times; keep the last entry per request+message.
-    var dedup: [String: (model: String, usage: [String: Any])] = [:]
+    var dedup: [String: (model: String, usage: [String: Any], date: Date)] = [:]
     for file in jsonlFiles(under: root, modifiedAfter: dayStart) {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -162,23 +169,30 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
             else { continue }
             let req = (d["requestId"] as? String) ?? (d["uuid"] as? String) ?? ts
             let key = req + ":" + ((msg["id"] as? String) ?? "")
-            dedup[key] = (model, usage)
+            dedup[key] = (model, usage, date)
         }
     }
 
     for (_, entry) in dedup {
-        var a = s.perModel[entry.model] ?? Agg()
+        var e = Agg()
         let u = entry.usage
-        a.input += num(u["input_tokens"])
-        a.output += num(u["output_tokens"])
-        a.cacheRead += num(u["cache_read_input_tokens"])
+        e.input = num(u["input_tokens"])
+        e.output = num(u["output_tokens"])
+        e.cacheRead = num(u["cache_read_input_tokens"])
         if let cc = u["cache_creation"] as? [String: Any] {
-            a.cacheWrite5m += num(cc["ephemeral_5m_input_tokens"])
-            a.cacheWrite1h += num(cc["ephemeral_1h_input_tokens"])
+            e.cacheWrite5m = num(cc["ephemeral_5m_input_tokens"])
+            e.cacheWrite1h = num(cc["ephemeral_1h_input_tokens"])
         } else {
-            a.cacheWrite5m += num(u["cache_creation_input_tokens"])
+            e.cacheWrite5m = num(u["cache_creation_input_tokens"])
         }
+        var a = s.perModel[entry.model] ?? Agg()
+        a.add(e)
         s.perModel[entry.model] = a
+        // Hourly spend: per-entry cost lands in the entry's hour bucket
+        if let h = hourIndex(entry.date, since: dayStart) {
+            let r = claudeRates(for: entry.model, now: now) ?? opusFallbackRates
+            s.hourly[h] += claudeCost(e, r)
+        }
     }
 
     for (model, var a) in s.perModel {
@@ -227,6 +241,10 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath) -> 
         }
         a.cost += num(d["cost"])  // OpenCode pre-computes cost per message
         s.perModel[model] = a
+        if let time = d["time"] as? [String: Any], num(time["created"]) > 0,
+           let h = hourIndex(Date(timeIntervalSince1970: num(time["created"]) / 1000), since: dayStart) {
+            s.hourly[h] += num(d["cost"])
+        }
     }
     s.finishTotals()
     return s
@@ -256,6 +274,9 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot) -> SourceSt
             a.cacheWrite5m += num(usage["cacheWrite"])
             if let cost = usage["cost"] as? [String: Any] {
                 a.cost += num(cost["total"])  // pi pre-computes cost per message
+                if let h = hourIndex(date, since: dayStart) {
+                    s.hourly[h] += num(cost["total"])
+                }
             }
             s.perModel[model] = a
         }

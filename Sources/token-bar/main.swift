@@ -5,6 +5,29 @@ import AppKit
 import CoreServices
 import TokenBarCore
 
+// 24 hourly spend bars, sparkline-sized
+final class SparkBarView: NSView {
+    var values = [Double](repeating: 0, count: 24) {
+        didSet { if values != oldValue { needsDisplay = true } }
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let maxV = max(values.max() ?? 0, .leastNonzeroMagnitude)
+        let n = CGFloat(values.count)
+        let gap: CGFloat = 2
+        let bw = (bounds.width - gap * (n - 1)) / n
+        for (i, v) in values.enumerated() {
+            let h = v > 0 ? max(2, CGFloat(v / maxV) * bounds.height) : 1.5
+            let rect = NSRect(x: CGFloat(i) * (bw + gap), y: 0, width: bw, height: h)
+            let alpha: CGFloat = v > 0 ? 0.55 : 0.12
+            NSColor.labelColor.withAlphaComponent(alpha).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: bw / 3, yRadius: bw / 3).fill()
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
@@ -14,6 +37,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
     var menuSignature = ""
+    var sparkView: SparkBarView?
+
+    func totalHourly(_ sources: [SourceStats]) -> [Double] {
+        var out = [Double](repeating: 0, count: 24)
+        for s in sources {
+            for (i, v) in s.hourly.enumerated() where i < out.count { out[i] += v }
+        }
+        return out
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -146,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateFields(total: Agg, active: [SourceStats]) {
         setField("Today/Spend", fmtMoney(total.cost))
         setField("Today/Tokens", tokensLine(total))
+        sparkView?.values = totalHourly(active)
         for s in active {
             for (model, a) in s.perModel {
                 let marker = s.unknownPricing.contains(model) ? "~" : ""
@@ -198,6 +231,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.addArrangedSubview(headerRow)
         panel.addArrangedSubview(label("Today/Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
+
+        // Tiny hourly spend sparkline
+        let spark = SparkBarView()
+        spark.values = totalHourly(active)
+        sparkView = spark
+        panel.setCustomSpacing(8, after: panel.arrangedSubviews.last!)
+        panel.addArrangedSubview(spark)
 
         // Per-source model table. One shared grid keeps the numeric columns
         // aligned across sources; header-row padding does the visual grouping.

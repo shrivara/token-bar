@@ -283,3 +283,68 @@ final class PiScannerTests: FixtureTestCase {
         XCTAssertFalse(scanPi(since: dayStart, root: tmp.appendingPathComponent("nope")).available)
     }
 }
+
+// MARK: - Hourly spend buckets
+
+final class HourlyBucketTests: FixtureTestCase {
+    func claudeLine(ts: String, req: String, output: Int) -> String {
+        let d: [String: Any] = [
+            "type": "assistant", "timestamp": ts, "requestId": req,
+            "message": ["id": "m1", "model": "claude-fable-5",
+                        "usage": ["input_tokens": 0, "output_tokens": output,
+                                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]],
+        ]
+        return String(data: try! JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
+    }
+
+    func testClaudeHourlyBucketsAndSumMatchesTotalCost() throws {
+        try write([
+            claudeLine(ts: inRange, req: "r1", output: 1_000_000),                            // bucket 1 (now)
+            claudeLine(ts: iso(dayStart.addingTimeInterval(60)), req: "r2", output: 500_000), // bucket 0
+        ], to: "p/s.jsonl")
+        let s = scanClaudeCode(since: dayStart, root: tmp)
+        XCTAssertEqual(s.hourly.reduce(0, +), s.agg.cost, accuracy: 1e-9)
+        XCTAssertEqual(s.hourly[0], 25, accuracy: 1e-9)  // 0.5M output at fable $50/M
+        XCTAssertEqual(s.hourly[1], 50, accuracy: 1e-9)
+    }
+
+    func testOpenCodeHourlyUsesStoredCost() throws {
+        let dbURL = tmp.appendingPathComponent("opencode.db")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, """
+            CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
+                time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)
+            """, nil, nil, nil)
+        let ms = Int64(Date().timeIntervalSince1970 * 1000)
+        let data: [String: Any] = ["role": "assistant", "modelID": "gpt-5", "cost": 0.4,
+                                   "tokens": ["input": 1, "output": 1],
+                                   "time": ["created": ms]]
+        let json = String(data: try JSONSerialization.data(withJSONObject: data), encoding: .utf8)!
+        var stmt: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "INSERT INTO message VALUES ('m1','s1',\(ms),\(ms),?)", -1, &stmt, nil), SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, json, -1, transient)
+        XCTAssertEqual(sqlite3_step(stmt), SQLITE_DONE)
+
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
+        XCTAssertEqual(s.hourly.reduce(0, +), 0.4, accuracy: 1e-9)
+        XCTAssertEqual(s.hourly[1], 0.4, accuracy: 1e-9)  // "now" is one hour after dayStart
+    }
+
+    func testPiHourlyUsesStoredCost() throws {
+        let d: [String: Any] = [
+            "type": "message", "id": "e1", "timestamp": inRange,
+            "message": ["role": "assistant", "model": "claude-sonnet-4-5",
+                        "usage": ["input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0,
+                                  "cost": ["total": 0.7]]],
+        ]
+        let line = String(data: try JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
+        try write([line], to: "--p--/s.jsonl")
+        let s = scanPi(since: dayStart, root: tmp)
+        XCTAssertEqual(s.hourly.reduce(0, +), 0.7, accuracy: 1e-9)
+        XCTAssertEqual(s.hourly[1], 0.7, accuracy: 1e-9)
+    }
+}
