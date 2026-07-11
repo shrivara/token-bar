@@ -289,9 +289,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var headerRowIndices: [Int] = []
             for s in active {
                 headerRowIndices.append(rows.count)
+                // Column captions ride on the harness header row
+                func caption(_ t: String) -> NSTextField {
+                    label(nil, t, size: 10, color: .tertiaryLabelColor, align: .right)
+                }
                 rows.append([label(nil, s.name.uppercased(), size: 10, weight: .medium,
                                    color: .tertiaryLabelColor),
-                             NSView(), NSView(), NSView(), NSView()])
+                             caption("spend"), caption("in"), caption("out"), caption("hit")])
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                     let marker = s.unknownPricing.contains(model) ? "~" : ""
                     rows.append([
