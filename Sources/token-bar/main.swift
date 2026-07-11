@@ -5,10 +5,80 @@ import AppKit
 import CoreServices
 import TokenBarCore
 
-// 24 hourly spend bars, sparkline-sized, with an hour axis (0 6 12 18 24)
+// MARK: - Period switching (D / W / M / Y)
+
+enum Period: Int, CaseIterable {
+    case day, week, month, year
+
+    var letter: String { ["D", "W", "M", "Y"][rawValue] }
+    var title: String { ["today", "this week", "this month", "this year"][rawValue] }
+    var caption: String { ["spend per hour", "spend per day", "spend per day", "spend per month"][rawValue] }
+
+    func start(cal: Calendar, now: Date) -> Date {
+        let component: Calendar.Component
+        switch self {
+        case .day: return cal.startOfDay(for: now)
+        case .week: component = .weekOfYear
+        case .month: component = .month
+        case .year: component = .year
+        }
+        return cal.dateInterval(of: component, for: now)?.start ?? cal.startOfDay(for: now)
+    }
+
+    func bucketSpec(start: Date, cal: Calendar, now: Date) -> BucketSpec {
+        switch self {
+        case .day:
+            return .hours(from: start)
+        case .week:
+            return BucketSpec(count: 7) { d in
+                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
+                return (0..<7).contains(i) ? i : nil
+            }
+        case .month:
+            let n = cal.range(of: .day, in: .month, for: now)?.count ?? 31
+            return BucketSpec(count: n) { d in
+                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
+                return (0..<n).contains(i) ? i : nil
+            }
+        case .year:
+            return BucketSpec(count: 12) { d in
+                let i = cal.dateComponents([.month], from: start, to: d).month ?? -1
+                return (0..<12).contains(i) ? i : nil
+            }
+        }
+    }
+
+    /// Axis labels as (fraction of width, text)
+    func axis(cal: Calendar, now: Date) -> [(CGFloat, String)] {
+        switch self {
+        case .day:
+            return [(0, "0"), (0.25, "6"), (0.5, "12"), (0.75, "18"), (1, "24")]
+        case .week:
+            let syms = cal.veryShortStandaloneWeekdaySymbols  // Sunday-first
+            let first = cal.firstWeekday - 1
+            return (0..<7).map { ((CGFloat($0) + 0.5) / 7, syms[(first + $0) % 7]) }
+        case .month:
+            let n = CGFloat(cal.range(of: .day, in: .month, for: now)?.count ?? 31)
+            return [(0.5 / n, "1"), (14.5 / n, "15"), ((n - 0.5) / n, "\(Int(n))")]
+        case .year:
+            let syms = cal.veryShortStandaloneMonthSymbols
+            return (0..<12).map { ((CGFloat($0) + 0.5) / 12, String(syms[$0].prefix(1))) }
+        }
+    }
+}
+
+// MARK: - Sparkline
+
+// Spend bars over the selected period, sparkline-sized, with axis + caption
 final class SparkBarView: NSView {
-    var values = [Double](repeating: 0, count: 24) {
+    var values: [Double] = [] {
         didSet { if values != oldValue { needsDisplay = true } }
+    }
+    var caption = "spend per hour" {
+        didSet { if caption != oldValue { needsDisplay = true } }
+    }
+    var axis: [(CGFloat, String)] = [] {
+        didSet { if axis.map(\.1) != oldValue.map(\.1) { needsDisplay = true } }
     }
 
     let axisHeight: CGFloat = 11
@@ -17,9 +87,10 @@ final class SparkBarView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16 + axisHeight + captionHeight) }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard !values.isEmpty else { return }
         let maxV = max(values.max() ?? 0, .leastNonzeroMagnitude)
         let n = CGFloat(values.count)
-        let gap: CGFloat = 2
+        let gap: CGFloat = values.count > 16 ? 1 : 2
         let bw = (bounds.width - gap * (n - 1)) / n
         let barArea = bounds.height - axisHeight - captionHeight
 
@@ -30,7 +101,7 @@ final class SparkBarView: NSView {
 
         // Caption: what the bars mean (left) and the scale (right)
         let captionY = bounds.height - captionHeight + 2
-        ("spend per hour" as NSString).draw(at: NSPoint(x: 0, y: captionY), withAttributes: tiny)
+        (caption as NSString).draw(at: NSPoint(x: 0, y: captionY), withAttributes: tiny)
         if let peak = values.max(), peak > 0 {
             let peakText = "peak \(fmtMoney(peak))" as NSString
             let w = peakText.size(withAttributes: tiny).width
@@ -58,18 +129,19 @@ final class SparkBarView: NSView {
             let rect = NSRect(x: CGFloat(i) * (bw + gap), y: axisHeight, width: bw, height: h)
             let alpha: CGFloat = v > 0 ? 0.55 : 0.12
             NSColor.labelColor.withAlphaComponent(alpha).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: bw / 3, yRadius: bw / 3).fill()
+            NSBezierPath(roundedRect: rect, xRadius: min(bw / 3, 2), yRadius: min(bw / 3, 2)).fill()
         }
 
-        for hour in [0, 6, 12, 18, 24] {
-            let text = "\(hour)" as NSString
-            let w = text.size(withAttributes: tiny).width
-            let tick = CGFloat(hour) * (bw + gap)  // leading edge of that hour's bar
-            let x = hour == 0 ? 0 : hour == 24 ? bounds.width - w : tick - w / 2
-            text.draw(at: NSPoint(x: x, y: 0), withAttributes: tiny)
+        for (frac, text) in axis {
+            let t = text as NSString
+            let w = t.size(withAttributes: tiny).width
+            let x = min(max(frac * bounds.width - w / 2, 0), bounds.width - w)
+            t.draw(at: NSPoint(x: x, y: 0), withAttributes: tiny)
         }
     }
 }
+
+// MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
@@ -81,14 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statFields: [String: NSTextField] = [:]
     var menuSignature = ""
     var sparkView: SparkBarView?
-
-    func totalHourly(_ sources: [SourceStats]) -> [Double] {
-        var out = [Double](repeating: 0, count: 24)
-        for s in sources {
-            for (i, v) in s.hourly.enumerated() where i < out.count { out[i] += v }
-        }
-        return out
-    }
+    var panelView: NSStackView?
+    var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -142,18 +208,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func quitClicked() { NSApp.terminate(nil) }
 
+    @objc func periodClicked(_ sender: NSButton) {
+        guard let p = Period(rawValue: sender.tag), p != period else { return }
+        period = p
+        UserDefaults.standard.set(p.rawValue, forKey: "period")
+        refresh()
+    }
+
+    func scanAll(since: Date, buckets: BucketSpec?) -> [SourceStats] {
+        [scanClaudeCode(since: since, buckets: buckets),
+         scanOpenCode(since: since, buckets: buckets),
+         scanPi(since: since, buckets: buckets)]
+    }
+
     func refresh() {
-        let dayStart = Calendar.current.startOfDay(for: Date())
-        let sources = [
-            scanClaudeCode(since: dayStart),
-            scanOpenCode(since: dayStart),
-            scanPi(since: dayStart),
-        ]
+        let cal = Calendar.current
+        let now = Date()
+        let periodStart = period.start(cal: cal, now: now)
+        let spec = period.bucketSpec(start: periodStart, cal: cal, now: now)
+
+        let sources = scanAll(since: periodStart, buckets: spec)
         var total = Agg()
         for s in sources { total.add(s.agg) }
 
-        animateBar(to: BarValues(cost: total.cost, input: total.input,
-                                 output: total.output, hit: total.hitRate))
+        // The menu bar always shows today, whatever the panel period is
+        var todayTotal = total
+        if period != .day {
+            todayTotal = Agg()
+            for s in scanAll(since: cal.startOfDay(for: now), buckets: nil) { todayTotal.add(s.agg) }
+        }
+        animateBar(to: BarValues(cost: todayTotal.cost, input: todayTotal.input,
+                                 output: todayTotal.output, hit: todayTotal.hitRate))
+
         rebuildMenu(total: total, sources: sources)
     }
 
@@ -199,16 +285,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "\(fmtTokens(a.input))↑  \(fmtTokens(a.output))↓   \(String(format: "%.0f%%", a.hitRate * 100)) cache"
     }
 
-    // Rebuild the panel only when its row structure changes (new model/source);
-    // otherwise update the text fields in place so an open menu never flickers.
+    func totalBuckets(_ sources: [SourceStats]) -> [Double] {
+        var out = [Double](repeating: 0, count: sources.map { $0.buckets.count }.max() ?? 0)
+        for s in sources {
+            for (i, v) in s.buckets.enumerated() where i < out.count { out[i] += v }
+        }
+        return out
+    }
+
+    // Rebuild the panel only when its row structure changes (period switch,
+    // new model/source); otherwise update text fields in place: no flicker.
     func rebuildMenu(total: Agg, sources: [SourceStats]) {
+        ensureMenuSkeleton()
         let active = activeSources(sources)
-        let signature = active.map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
+        let signature = "\(period.rawValue)|" + active
+            .map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
             .joined(separator: "|")
         if signature == menuSignature && !statFields.isEmpty {
             updateFields(total: total, active: active)
         } else {
-            buildMenu(total: total, active: active)
+            buildPanelContent(total: total, active: active)
             menuSignature = signature
         }
     }
@@ -218,10 +314,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         f.stringValue = value
     }
 
+    func resizePanel() {
+        guard let panel = panelView else { return }
+        panel.layoutSubtreeIfNeeded()
+        var size = panel.fittingSize
+        // fittingSize can under-measure a detached stack view; pad so the
+        // trailing column and descenders never clip
+        size.width = max(size.width + 16, 250)
+        size.height += 4
+        if size != panel.frame.size { panel.setFrameSize(size) }
+    }
+
     func updateFields(total: Agg, active: [SourceStats]) {
-        setField("Today/Spend", fmtMoney(total.cost))
-        setField("Today/Tokens", tokensLine(total))
-        sparkView?.values = totalHourly(active)
+        setField("Spend", fmtMoney(total.cost))
+        setField("Tokens", tokensLine(total))
+        sparkView?.values = totalBuckets(active)
         for s in active {
             for (model, a) in s.perModel {
                 let marker = s.unknownPricing.contains(model) ? "~" : ""
@@ -231,20 +338,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 setField("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100))
             }
         }
-        // Re-measure in case a value grew wider than the panel was sized for
-        if let panel = statusItem.menu?.items.first?.view {
-            panel.layoutSubtreeIfNeeded()
-            var size = panel.fittingSize
-            size.width = max(size.width + 16, 250)
-            size.height += 4
-            if size != panel.frame.size { panel.setFrameSize(size) }
-        }
+        resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
-    func buildMenu(total: Agg, active: [SourceStats]) {
-        guard let menu = statusItem.menu else { return }
+    // Menu skeleton (panel container, separator, Quit) is created once; the
+    // panel's content is rebuilt in place so the menu can stay open.
+    func ensureMenuSkeleton() {
+        guard let menu = statusItem.menu, menu.items.isEmpty else { return }
         menu.autoenablesItems = false
-        menu.removeAllItems()
+
+        let panel = NSStackView()
+        panel.orientation = .vertical
+        panel.alignment = .leading
+        panel.spacing = 4
+        panel.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        panelView = panel
+
+        let panelItem = NSMenuItem()
+        panelItem.view = panel
+        menu.addItem(panelItem)
+
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
+        quitItem.target = self
+        quitItem.isEnabled = true
+        menu.addItem(quitItem)
+    }
+
+    func buildPanelContent(total: Agg, active: [SourceStats]) {
+        guard let panel = panelView else { return }
+        for v in panel.arrangedSubviews {
+            panel.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
         statFields.removeAll()
 
         func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
@@ -258,26 +384,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return f
         }
 
-        let panel = NSStackView()
-        panel.orientation = .vertical
-        panel.alignment = .leading
-        panel.spacing = 4
-        panel.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        // Header: big spend + period word, with the D W M Y switcher on the right
+        let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
+        let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
 
-        // Header: big spend, then the token summary line
-        let spend = label("Today/Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
-        let today = label(nil, "today", size: 12, color: .secondaryLabelColor)
-        let headerRow = NSStackView(views: [spend, today])
+        let switcher = NSStackView()
+        switcher.orientation = .horizontal
+        switcher.spacing = 9
+        for p in Period.allCases {
+            let b = NSButton(title: p.letter, target: self, action: #selector(periodClicked(_:)))
+            b.isBordered = false
+            b.tag = p.rawValue
+            b.attributedTitle = NSAttributedString(
+                string: p.letter,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11, weight: p == period ? .bold : .regular),
+                    .foregroundColor: p == period ? NSColor.labelColor : NSColor.tertiaryLabelColor,
+                ])
+            switcher.addArrangedSubview(b)
+        }
+
+        let flexSpacer = NSView()
+        flexSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let headerRow = NSStackView(views: [spend, periodLabel, flexSpacer, switcher])
         headerRow.orientation = .horizontal
         headerRow.alignment = .lastBaseline
         headerRow.spacing = 6
         panel.addArrangedSubview(headerRow)
-        panel.addArrangedSubview(label("Today/Tokens", tokensLine(total), size: 12,
+        // Stretch the header across the panel so the switcher sits at the right edge
+        headerRow.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+        headerRow.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
+
+        panel.addArrangedSubview(label("Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
 
-        // Tiny hourly spend sparkline
+        // Spend timeline for the period
+        let cal = Calendar.current
         let spark = SparkBarView()
-        spark.values = totalHourly(active)
+        spark.values = totalBuckets(active)
+        spark.caption = period.caption
+        spark.axis = period.axis(cal: cal, now: Date())
         sparkView = spark
         panel.setCustomSpacing(8, after: panel.arrangedSubviews.last!)
         panel.addArrangedSubview(spark)
@@ -325,23 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panel.addArrangedSubview(grid)
         }
 
-        panel.layoutSubtreeIfNeeded()
-        var size = panel.fittingSize
-        // fittingSize can under-measure a detached stack view; pad so the
-        // trailing column and descenders never clip
-        size.width = max(size.width + 16, 250)
-        size.height += 4
-        panel.setFrameSize(size)
-
-        let panelItem = NSMenuItem()
-        panelItem.view = panel
-        menu.addItem(panelItem)
-
-        menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
-        quitItem.target = self
-        quitItem.isEnabled = true
-        menu.addItem(quitItem)
+        resizePanel()
     }
 }
 

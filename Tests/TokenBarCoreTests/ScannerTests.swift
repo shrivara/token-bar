@@ -303,9 +303,9 @@ final class HourlyBucketTests: FixtureTestCase {
             claudeLine(ts: iso(dayStart.addingTimeInterval(60)), req: "r2", output: 500_000), // bucket 0
         ], to: "p/s.jsonl")
         let s = scanClaudeCode(since: dayStart, root: tmp)
-        XCTAssertEqual(s.hourly.reduce(0, +), s.agg.cost, accuracy: 1e-9)
-        XCTAssertEqual(s.hourly[0], 25, accuracy: 1e-9)  // 0.5M output at fable $50/M
-        XCTAssertEqual(s.hourly[1], 50, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets.reduce(0, +), s.agg.cost, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets[0], 25, accuracy: 1e-9)  // 0.5M output at fable $50/M
+        XCTAssertEqual(s.buckets[1], 50, accuracy: 1e-9)
     }
 
     func testOpenCodeHourlyUsesStoredCost() throws {
@@ -330,8 +330,8 @@ final class HourlyBucketTests: FixtureTestCase {
         XCTAssertEqual(sqlite3_step(stmt), SQLITE_DONE)
 
         let s = scanOpenCode(since: dayStart, dbPath: dbURL)
-        XCTAssertEqual(s.hourly.reduce(0, +), 0.4, accuracy: 1e-9)
-        XCTAssertEqual(s.hourly[1], 0.4, accuracy: 1e-9)  // "now" is one hour after dayStart
+        XCTAssertEqual(s.buckets.reduce(0, +), 0.4, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets[1], 0.4, accuracy: 1e-9)  // "now" is one hour after dayStart
     }
 
     func testPiHourlyUsesStoredCost() throws {
@@ -344,7 +344,35 @@ final class HourlyBucketTests: FixtureTestCase {
         let line = String(data: try JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
         try write([line], to: "--p--/s.jsonl")
         let s = scanPi(since: dayStart, root: tmp)
-        XCTAssertEqual(s.hourly.reduce(0, +), 0.7, accuracy: 1e-9)
-        XCTAssertEqual(s.hourly[1], 0.7, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets.reduce(0, +), 0.7, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets[1], 0.7, accuracy: 1e-9)
+    }
+}
+
+// MARK: - Custom bucket specs (week/month/year views)
+
+final class BucketSpecTests: FixtureTestCase {
+    func testDailyBucketsForWeekView() throws {
+        let weekStart = Date().addingTimeInterval(-3 * 86_400)
+        let spec = BucketSpec.spans(of: 86_400, count: 7, from: weekStart)
+        let d: [String: Any] = [
+            "type": "assistant", "timestamp": iso(Date()), "requestId": "r1",
+            "message": ["id": "m1", "model": "claude-fable-5",
+                        "usage": ["input_tokens": 0, "output_tokens": 1_000_000,
+                                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]],
+        ]
+        let line = String(data: try JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
+        try write([line], to: "p/s.jsonl")
+        let s = scanClaudeCode(since: weekStart, root: tmp, buckets: spec)
+        XCTAssertEqual(s.buckets.count, 7)
+        XCTAssertEqual(s.buckets[3], 50, accuracy: 1e-9)  // "now" is day 3 of the window
+        XCTAssertEqual(s.buckets.reduce(0, +), s.agg.cost, accuracy: 1e-9)
+    }
+
+    func testOutOfRangeDatesDropOutOfBuckets() {
+        let spec = BucketSpec.spans(of: 3600, count: 24, from: Date())
+        XCTAssertNil(spec.index(Date().addingTimeInterval(-10)))
+        XCTAssertNil(spec.index(Date().addingTimeInterval(25 * 3600)))
+        XCTAssertEqual(spec.index(Date().addingTimeInterval(3700)), 1)
     }
 }

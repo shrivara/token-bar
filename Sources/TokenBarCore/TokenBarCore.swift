@@ -37,8 +37,8 @@ public struct SourceStats {
     public var agg = Agg()
     public var perModel: [String: Agg] = [:]
     public var unknownPricing: Set<String> = []
-    /// Spend per hour of the day (24 buckets from dayStart)
-    public var hourly = [Double](repeating: 0, count: 24)
+    /// Spend per time bucket (see BucketSpec; defaults to 24 hours from the scan start)
+    public var buckets: [Double] = []
 
     public init(name: String) { self.name = name }
 
@@ -47,9 +47,29 @@ public struct SourceStats {
     }
 }
 
-func hourIndex(_ date: Date, since dayStart: Date) -> Int? {
-    let h = Int(date.timeIntervalSince(dayStart) / 3600)
-    return (0..<24).contains(h) ? h : nil
+/// How to slice a period into spend buckets: a count and a date-to-index mapping.
+public struct BucketSpec {
+    public let count: Int
+    public let index: (Date) -> Int?
+
+    public init(count: Int, index: @escaping (Date) -> Int?) {
+        self.count = count
+        self.index = index
+    }
+
+    /// Fixed-length buckets of `seconds` starting at `start`
+    public static func spans(of seconds: TimeInterval, count: Int, from start: Date) -> BucketSpec {
+        BucketSpec(count: count) { d in
+            // floor, not Int(): truncation would put just-before-start dates in bucket 0
+            let i = Int(floor(d.timeIntervalSince(start) / seconds))
+            return (0..<count).contains(i) ? i : nil
+        }
+    }
+
+    /// 24 one-hour buckets from `start` (the default day view)
+    public static func hours(from start: Date) -> BucketSpec {
+        spans(of: 3600, count: 24, from: start)
+    }
 }
 
 // MARK: - Claude pricing (per MTok; Claude API reference, cached 2026-06-24)
@@ -149,8 +169,10 @@ public func fmtMoney(_ d: Double) -> String { String(format: "$%.2f", d) }
 // MARK: - Source scanners
 
 public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
-                           now: Date = Date()) -> SourceStats {
+                           now: Date = Date(), buckets: BucketSpec? = nil) -> SourceStats {
     var s = SourceStats(name: "Claude Code")
+    let spec = buckets ?? .hours(from: dayStart)
+    s.buckets = [Double](repeating: 0, count: spec.count)
     guard fm.fileExists(atPath: root.path) else { return s }
     s.available = true
 
@@ -188,10 +210,10 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         var a = s.perModel[entry.model] ?? Agg()
         a.add(e)
         s.perModel[entry.model] = a
-        // Hourly spend: per-entry cost lands in the entry's hour bucket
-        if let h = hourIndex(entry.date, since: dayStart) {
+        // Spend timeline: per-entry cost lands in the entry's bucket
+        if let h = spec.index(entry.date) {
             let r = claudeRates(for: entry.model, now: now) ?? opusFallbackRates
-            s.hourly[h] += claudeCost(e, r)
+            s.buckets[h] += claudeCost(e, r)
         }
     }
 
@@ -208,8 +230,11 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
     return s
 }
 
-public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath) -> SourceStats {
+public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
+                         buckets: BucketSpec? = nil) -> SourceStats {
     var s = SourceStats(name: "OpenCode")
+    let spec = buckets ?? .hours(from: dayStart)
+    s.buckets = [Double](repeating: 0, count: spec.count)
     guard fm.fileExists(atPath: dbPath.path) else { return s }
     s.available = true
 
@@ -242,16 +267,19 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath) -> 
         a.cost += num(d["cost"])  // OpenCode pre-computes cost per message
         s.perModel[model] = a
         if let time = d["time"] as? [String: Any], num(time["created"]) > 0,
-           let h = hourIndex(Date(timeIntervalSince1970: num(time["created"]) / 1000), since: dayStart) {
-            s.hourly[h] += num(d["cost"])
+           let h = spec.index(Date(timeIntervalSince1970: num(time["created"]) / 1000)) {
+            s.buckets[h] += num(d["cost"])
         }
     }
     s.finishTotals()
     return s
 }
 
-public func scanPi(since dayStart: Date, root: URL = piSessionsRoot) -> SourceStats {
+public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
+                   buckets: BucketSpec? = nil) -> SourceStats {
     var s = SourceStats(name: "pi")
+    let spec = buckets ?? .hours(from: dayStart)
+    s.buckets = [Double](repeating: 0, count: spec.count)
     guard fm.fileExists(atPath: root.path) else { return s }
     s.available = true
 
@@ -274,8 +302,8 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot) -> SourceSt
             a.cacheWrite5m += num(usage["cacheWrite"])
             if let cost = usage["cost"] as? [String: Any] {
                 a.cost += num(cost["total"])  // pi pre-computes cost per message
-                if let h = hourIndex(date, since: dayStart) {
-                    s.hourly[h] += num(cost["total"])
+                if let h = spec.index(date) {
+                    s.buckets[h] += num(cost["total"])
                 }
             }
             s.perModel[model] = a
