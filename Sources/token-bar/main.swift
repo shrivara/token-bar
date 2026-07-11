@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func activeSources(_ sources: [SourceStats]) -> [SourceStats] {
         sources.filter { $0.available && ($0.agg.cost > 0 || $0.agg.contextTotal > 0 || $0.agg.output > 0) }
+            .sorted { $0.agg.cost > $1.agg.cost }  // biggest spender first
     }
 
     func tokensLine(_ a: Agg) -> String {
@@ -197,10 +198,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.addArrangedSubview(label("Today/Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
 
-        // Per-source model table
+        // Per-source model table. One shared grid keeps the numeric columns
+        // aligned across sources; header-row padding does the visual grouping.
         if !active.isEmpty {
             var rows: [[NSView]] = []
+            var headerRowIndices: [Int] = []
             for s in active {
+                headerRowIndices.append(rows.count)
                 rows.append([label(nil, s.name.uppercased(), size: 10, weight: .medium,
                                    color: .tertiaryLabelColor),
                              NSView(), NSView(), NSView()])
@@ -221,7 +225,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             grid.rowSpacing = 3
             grid.columnSpacing = 14
             for col in 1..<4 { grid.column(at: col).xPlacement = .trailing }
-            panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
+            // A header binds to the rows below it: generous space above,
+            // a small fixed gap below, uniform row spacing within a section.
+            for i in headerRowIndices {
+                grid.row(at: i).topPadding = i == 0 ? 0 : 10
+                grid.row(at: i).bottomPadding = 1
+            }
+            panel.setCustomSpacing(12, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(grid)
         }
 
