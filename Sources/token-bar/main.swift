@@ -356,13 +356,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         f.stringValue = value
     }
 
+    // Panel width is sticky: it grows to fit the widest content seen but never
+    // shrinks back, so switching periods doesn't make the menu edges jump.
+    var stickyWidth: CGFloat = 250
+
     func resizePanel() {
         guard let panel = panelView else { return }
         panel.layoutSubtreeIfNeeded()
         var size = panel.fittingSize
         // fittingSize can under-measure a detached stack view; pad so the
         // trailing column and descenders never clip
-        size.width = max(size.width + 16, 250)
+        stickyWidth = max(stickyWidth, size.width + 16)
+        size.width = stickyWidth
         size.height += 4
         if size != panel.frame.size { panel.setFrameSize(size) }
     }
