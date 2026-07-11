@@ -5,6 +5,8 @@ let package = Package(
     name: "token-bar",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "token-bar", path: "Sources/token-bar")
+        .target(name: "TokenBarCore"),
+        .executableTarget(name: "token-bar", dependencies: ["TokenBarCore"], path: "Sources/token-bar"),
+        .testTarget(name: "TokenBarCoreTests", dependencies: ["TokenBarCore"]),
     ]
 )
