@@ -12,15 +12,30 @@ final class SparkBarView: NSView {
     }
 
     let axisHeight: CGFloat = 11
+    let captionHeight: CGFloat = 12
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16 + axisHeight) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16 + axisHeight + captionHeight) }
 
     override func draw(_ dirtyRect: NSRect) {
         let maxV = max(values.max() ?? 0, .leastNonzeroMagnitude)
         let n = CGFloat(values.count)
         let gap: CGFloat = 2
         let bw = (bounds.width - gap * (n - 1)) / n
-        let barArea = bounds.height - axisHeight
+        let barArea = bounds.height - axisHeight - captionHeight
+
+        let tiny: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]
+
+        // Caption: what the bars mean (left) and the scale (right)
+        let captionY = bounds.height - captionHeight + 2
+        ("spend per hour" as NSString).draw(at: NSPoint(x: 0, y: captionY), withAttributes: tiny)
+        if let peak = values.max(), peak > 0 {
+            let peakText = "peak \(fmtMoney(peak))" as NSString
+            let w = peakText.size(withAttributes: tiny).width
+            peakText.draw(at: NSPoint(x: bounds.width - w, y: captionY), withAttributes: tiny)
+        }
 
         for (i, v) in values.enumerated() {
             let h = v > 0 ? max(2, CGFloat(v / maxV) * barArea) : 1.5
@@ -30,16 +45,12 @@ final class SparkBarView: NSView {
             NSBezierPath(roundedRect: rect, xRadius: bw / 3, yRadius: bw / 3).fill()
         }
 
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
-            .foregroundColor: NSColor.tertiaryLabelColor,
-        ]
         for hour in [0, 6, 12, 18, 24] {
             let text = "\(hour)" as NSString
-            let w = text.size(withAttributes: attrs).width
+            let w = text.size(withAttributes: tiny).width
             let tick = CGFloat(hour) * (bw + gap)  // leading edge of that hour's bar
             let x = hour == 0 ? 0 : hour == 24 ? bounds.width - w : tick - w / 2
-            text.draw(at: NSPoint(x: x, y: 0), withAttributes: attrs)
+            text.draw(at: NSPoint(x: x, y: 0), withAttributes: tiny)
         }
     }
 }
