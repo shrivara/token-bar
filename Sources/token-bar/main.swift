@@ -143,7 +143,7 @@ final class SparkBarView: NSView {
 
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
     var eventStream: FSEventStreamRef?
@@ -190,8 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
-        menu.delegate = self
         statusItem.menu = menu
+        observeMenuTracking(menu)
         refresh()
         startWatching()
         // Fallback: catches midnight rollover, missed events, and dirs created after launch
@@ -239,19 +239,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var menuIsOpen = false
     var pendingBar: BarValues?
 
-    func menuWillOpen(_ menu: NSMenu) {
-        menuIsOpen = true
-        refresh()
-    }
-
     // Bar updates are deferred while the menu is open: resizing the status
     // item moves the menu's anchor, so the whole panel would jump sideways
     // on every period switch. The panel shows the live numbers meanwhile.
-    func menuDidClose(_ menu: NSMenu) {
-        menuIsOpen = false
-        if let target = pendingBar {
-            pendingBar = nil
-            animateBar(to: target)
+    // Open state comes from NSMenu's tracking notifications, which fire for
+    // every way a menu can open/close (click-away, Esc, app switch) - the
+    // delegate's menuDidClose can be missed, leaving the bar frozen.
+    func observeMenuTracking(_ menu: NSMenu) {
+        // queue: nil delivers synchronously on the posting (main) thread;
+        // .main would enqueue onto the stalled-during-tracking main queue
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: menu, queue: nil
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.menuIsOpen = true
+            self.refresh()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification, object: menu, queue: nil
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.menuIsOpen = false
+            if let target = self.pendingBar {
+                self.pendingBar = nil
+                self.animateBar(to: target)
+            }
         }
     }
 
