@@ -143,6 +143,13 @@ final class ClaudeScannerTests: FixtureTestCase {
         XCTAssertEqual(s.unknownPricing, ["claude-zeta-7"])
     }
 
+    func testMissingCatalogFallsBackToOpus() throws {
+        try write([entry(ts: inRange, req: "r1", output: 1_000_000)], to: "p/s.jsonl")
+        let s = scanClaudeCode(since: dayStart, root: tmp, catalog: nil)
+        XCTAssertEqual(s.agg.cost, 25, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, ["claude-fable-5"])
+    }
+
     func testMissingRootIsUnavailable() {
         let s = scanClaudeCode(since: dayStart, root: tmp.appendingPathComponent("nope"))
         XCTAssertFalse(s.available)
@@ -228,6 +235,16 @@ final class OpenCodeScannerTests: FixtureTestCase {
         ])
         let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
         XCTAssertEqual(Set(s.perModel.keys), ["openai/gpt-5", "openai/big-pickle"])
+    }
+
+    func testNormalizesProviderBeforeGrouping() throws {
+        try makeDB(rows: [
+            (Date(), assistant(provider: "OpenAI", model: "gpt-5", input: 1, output: 1, cost: 0.1)),
+            (Date(), assistant(provider: "open_ai", model: "gpt-5", input: 2, output: 2, cost: 0.2)),
+        ])
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
+        XCTAssertEqual(Set(s.perModel.keys), ["openai/gpt-5"])
+        XCTAssertEqual(s.perModel["openai/gpt-5"]!.cost, 0.3, accuracy: 1e-9)
     }
 
     func testMissingDBIsUnavailable() {

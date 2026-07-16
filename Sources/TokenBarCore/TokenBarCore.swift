@@ -178,10 +178,10 @@ private func price(_ usage: PricedUsage, model: PricingCatalog.Model) -> Double?
 }
 
 private func providerID(_ raw: String) -> String {
-    switch raw.lowercased() {
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
     case "amazon bedrock", "amazon_bedrock", "aws-bedrock", "bedrock": return "amazon-bedrock"
-    case "open ai", "open_ai": return "openai"
-    default: return raw
+    case "openai", "open ai", "open_ai": return "openai"
+    default: return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -194,6 +194,9 @@ private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
     guard let model = catalog?.model(provider: providerID(provider), id: model) else { return nil }
     return price(usage, model: model)
 }
+
+// The bundle is expected to be present, but Claude Code has no stored cost if it is not.
+private let opusFallbackRates = Rates(inPerM: 5, outPerM: 25, cacheReadPerM: 0.5, cacheWritePerM: 6.25)
 
 public func claudeRates(for model: String, catalog: PricingCatalog? = .bundled) -> Rates? {
     guard let model = catalog?.model(provider: "anthropic", id: model) else { return nil }
@@ -315,7 +318,7 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         let catalogCost = catalogPrice(usage, provider: "anthropic", model: entry.model, catalog: catalog)
         let cost = catalogCost
             ?? catalogPrice(usage, provider: "anthropic", model: "claude-opus-4-6", catalog: catalog)
-            ?? 0
+            ?? claudeCost(e, opusFallbackRates)
         a.cost += cost
         s.perModel[entry.model] = a
         if catalogCost == nil {
@@ -364,7 +367,7 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
               d["role"] as? String == "assistant",
               let tokens = d["tokens"] as? [String: Any]
         else { continue }
-        let provider = (d["providerID"] as? String) ?? "unknown"
+        let provider = providerID((d["providerID"] as? String) ?? "unknown")
         let model = (d["modelID"] as? String) ?? "unknown"
         let key = modelKey(provider: provider, model: model)
         var a = s.perModel[key] ?? Agg()
@@ -422,7 +425,7 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
                   let ts = d["timestamp"] as? String,
                   let date = parseISO(ts), date >= dayStart
             else { continue }
-            let provider = (msg["provider"] as? String) ?? "unknown"
+            let provider = providerID((msg["provider"] as? String) ?? "unknown")
             let model = (msg["model"] as? String) ?? "unknown"
             let key = modelKey(provider: provider, model: model)
             var a = s.perModel[key] ?? Agg()
