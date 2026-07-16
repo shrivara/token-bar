@@ -1,12 +1,13 @@
 # Releasing token-bar
 
 1. **Test and tag** (in this repo):
-   ```sh
-   swift test
-   # bump CFBundleShortVersionString in build.sh
-   git commit -am "Bump version to X.Y.Z"
-   git push && git tag vX.Y.Z && git push origin vX.Y.Z
-   ```
+    ```sh
+    ./Scripts/update-model-pricing.sh  # review and commit the updated snapshot
+    swift test
+    # bump CFBundleShortVersionString in build.sh
+    git commit -am "Bump version to X.Y.Z"
+    git push && git tag vX.Y.Z && git push origin vX.Y.Z
+    ```
 
 2. **Update the formula** (in `shrivara/homebrew-tap`):
    ```sh

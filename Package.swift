@@ -5,7 +5,10 @@ let package = Package(
     name: "token-bar",
     platforms: [.macOS(.v14)],
     targets: [
-        .target(name: "TokenBarCore"),
+        .target(
+            name: "TokenBarCore",
+            resources: [.process("Resources")]
+        ),
         .executableTarget(name: "token-bar", dependencies: ["TokenBarCore"], path: "Sources/token-bar"),
         .testTarget(name: "TokenBarCoreTests", dependencies: ["TokenBarCore"]),
     ]

@@ -2,36 +2,11 @@ import XCTest
 @testable import TokenBarCore
 
 final class PricingTests: XCTestCase {
-    func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
-        Calendar.current.date(from: DateComponents(year: y, month: m, day: d))!
-    }
-
-    func testKnownModelRates() {
+    func testBundledCatalogResolvesExactClaudeModels() {
         XCTAssertEqual(claudeRates(for: "claude-fable-5"), Rates(inPerM: 10, outPerM: 50))
-        XCTAssertEqual(claudeRates(for: "claude-mythos-5"), Rates(inPerM: 10, outPerM: 50))
-        XCTAssertEqual(claudeRates(for: "claude-opus-4-8"), Rates(inPerM: 5, outPerM: 25))
         XCTAssertEqual(claudeRates(for: "claude-opus-4-6"), Rates(inPerM: 5, outPerM: 25))
-        XCTAssertEqual(claudeRates(for: "claude-haiku-4-5"), Rates(inPerM: 1, outPerM: 5))
-        XCTAssertEqual(claudeRates(for: "claude-haiku-4-5-20251001"), Rates(inPerM: 1, outPerM: 5))
-    }
-
-    func testSonnet4DoesNotCatchSonnet5() {
         XCTAssertEqual(claudeRates(for: "claude-sonnet-4-6"), Rates(inPerM: 3, outPerM: 15))
-        // Prefix disambiguation: during the intro window sonnet-5 pricing (2/10)
-        // differs from sonnet-4's (3/15), so a prefix mixup would show here.
-        // (Post-intro the two tiers genuinely share $3/$15, so they can't be compared.)
-        XCTAssertEqual(claudeRates(for: "claude-sonnet-5", now: date(2026, 7, 15)),
-                       Rates(inPerM: 2, outPerM: 10))
-        XCTAssertEqual(claudeRates(for: "claude-sonnet-4-6", now: date(2026, 7, 15)),
-                       Rates(inPerM: 3, outPerM: 15))
-    }
-
-    func testSonnet5IntroPricingWindow() {
-        // Intro $2/$10 through 2026-08-31, then $3/$15
-        XCTAssertEqual(claudeRates(for: "claude-sonnet-5", now: date(2026, 7, 15)),
-                       Rates(inPerM: 2, outPerM: 10))
-        XCTAssertEqual(claudeRates(for: "claude-sonnet-5", now: date(2026, 10, 1)),
-                       Rates(inPerM: 3, outPerM: 15))
+        XCTAssertEqual(claudeRates(for: "claude-haiku-4-5-20251001"), Rates(inPerM: 1, outPerM: 5))
     }
 
     func testUnknownModelsReturnNil() {
@@ -40,13 +15,13 @@ final class PricingTests: XCTestCase {
         XCTAssertNil(claudeRates(for: ""))
     }
 
-    func testCostMathIncludesCacheMultipliers() {
+    func testCostMathUsesExplicitCacheRates() {
         // 1M of each bucket at fable rates:
-        // input 10 + output 50 + cacheRead 10*0.1 + write5m 10*1.25 + write1h 10*2
+        // input 10 + output 50 + cacheRead 1 + each cache write 12.5
         let a = Agg(input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
                     cacheWrite5m: 1_000_000, cacheWrite1h: 1_000_000)
-        let cost = claudeCost(a, Rates(inPerM: 10, outPerM: 50))
-        XCTAssertEqual(cost, 10 + 50 + 1 + 12.5 + 20, accuracy: 1e-9)
+        let cost = claudeCost(a, Rates(inPerM: 10, outPerM: 50, cacheReadPerM: 1, cacheWritePerM: 12.5))
+        XCTAssertEqual(cost, 10 + 50 + 1 + 12.5 + 12.5, accuracy: 1e-9)
     }
 
     func testZeroUsageCostsNothing() {

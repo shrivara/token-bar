@@ -33,4 +33,6 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 EOF
 
 cp ".build/release/token-bar" "$APP/Contents/MacOS/TokenBar"
+mkdir -p "$APP/Contents/Resources"
+cp -R .build/release/*.bundle "$APP/Contents/Resources/"
 echo "Built $APP"

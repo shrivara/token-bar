@@ -179,19 +179,19 @@ final class OpenCodeScannerTests: FixtureTestCase {
         }
     }
 
-    func assistant(model: String = "gpt-5", input: Int, output: Int, reasoning: Int = 0,
-                   cacheRead: Int = 0, cacheWrite: Int = 0, cost: Double) -> [String: Any] {
-        ["role": "assistant", "modelID": model, "cost": cost,
+    func assistant(provider: String = "openai", model: String = "gpt-5", input: Int, output: Int, reasoning: Int = 0,
+                    cacheRead: Int = 0, cacheWrite: Int = 0, cost: Double) -> [String: Any] {
+        ["role": "assistant", "providerID": provider, "modelID": model, "cost": cost,
          "tokens": ["input": input, "output": output, "reasoning": reasoning,
                     "cache": ["read": cacheRead, "write": cacheWrite]]]
     }
 
-    func testAggregatesAssistantRowsAndTrustsStoredCost() throws {
+    func testAggregatesAssistantRowsAndUsesStoredCostWhenCatalogCannotResolve() throws {
         try makeDB(rows: [
             (Date(), assistant(input: 100, output: 50, cost: 0.25)),
             (Date(), assistant(input: 200, output: 100, cost: 0.5)),
         ])
-        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
         XCTAssertTrue(s.available)
         XCTAssertEqual(s.agg.input, 300)
         XCTAssertEqual(s.agg.output, 150)
@@ -200,12 +200,12 @@ final class OpenCodeScannerTests: FixtureTestCase {
 
     func testReasoningCountsAsOutput() throws {
         try makeDB(rows: [(Date(), assistant(input: 10, output: 20, reasoning: 30, cost: 0))])
-        XCTAssertEqual(scanOpenCode(since: dayStart, dbPath: dbURL).agg.output, 50)
+        XCTAssertEqual(scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil).agg.output, 50)
     }
 
     func testCacheTokensMapped() throws {
         try makeDB(rows: [(Date(), assistant(input: 0, output: 0, cacheRead: 700, cacheWrite: 80, cost: 0))])
-        let a = scanOpenCode(since: dayStart, dbPath: dbURL).agg
+        let a = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil).agg
         XCTAssertEqual(a.cacheRead, 700)
         XCTAssertEqual(a.cacheWrite, 80)
     }
@@ -216,7 +216,7 @@ final class OpenCodeScannerTests: FixtureTestCase {
             (Date().addingTimeInterval(-7200), assistant(input: 888, output: 0, cost: 9)),
             (Date(), assistant(input: 1, output: 1, cost: 0.1)),
         ])
-        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
         XCTAssertEqual(s.agg.input, 1)
         XCTAssertEqual(s.agg.cost, 0.1, accuracy: 1e-9)
     }
@@ -226,12 +226,56 @@ final class OpenCodeScannerTests: FixtureTestCase {
             (Date(), assistant(model: "gpt-5", input: 1, output: 1, cost: 0.1)),
             (Date(), assistant(model: "big-pickle", input: 2, output: 2, cost: 0)),
         ])
-        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
-        XCTAssertEqual(Set(s.perModel.keys), ["gpt-5", "big-pickle"])
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
+        XCTAssertEqual(Set(s.perModel.keys), ["openai/gpt-5", "openai/big-pickle"])
     }
 
     func testMissingDBIsUnavailable() {
         XCTAssertFalse(scanOpenCode(since: dayStart, dbPath: dbURL).available)
+    }
+
+    func testCatalogRepricesZeroStoredCostIncludingReasoningAndCache() throws {
+        let json = """
+        {"providers":{"openai":{"models":{"gpt-test":{"input":1,"output":2,"reasoning":3,"cache_read":0.1,"cache_write":1.25}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try makeDB(rows: [
+            (Date(), assistant(model: "gpt-test", input: 1_000_000, output: 1_000_000,
+                                reasoning: 1_000_000, cacheRead: 1_000_000,
+                                cacheWrite: 1_000_000, cost: 0)),
+        ])
+
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 7.35, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
+    func testCatalogPreservesBedrockProviderAndModelIdentity() throws {
+        let json = """
+        {"providers":{"amazon-bedrock":{"models":{"us.anthropic.claude-sonnet-4-6":{"input":3,"output":15,"cache_read":0.3,"cache_write":3.75}}},"openai":{"models":{"us.anthropic.claude-sonnet-4-6":{"input":99,"output":99}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try makeDB(rows: [
+            (Date(), assistant(provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-4-6",
+                                input: 1_000_000, output: 0, cost: 0)),
+        ])
+
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 3, accuracy: 1e-9)
+        XCTAssertNotNil(s.perModel["amazon-bedrock/us.anthropic.claude-sonnet-4-6"])
+    }
+
+    func testCatalogSelectsContextTierPerMessage() throws {
+        let json = """
+        {"providers":{"openai":{"models":{"tiered":{"input":1,"output":1,"tiers":[{"input":2,"output":2,"tier":{"type":"context","size":10}}]}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try makeDB(rows: [
+            (Date(), assistant(model: "tiered", input: 1_000_000, output: 0, cost: 0)),
+        ])
+
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 2, accuracy: 1e-9)
     }
 }
 
@@ -258,7 +302,7 @@ final class PiScannerTests: FixtureTestCase {
             entry(ts: inRange, input: 100, output: 10, cacheRead: 500, cacheWrite: 50, cost: 0.2),
             entry(ts: inRange, input: 200, output: 20, cost: 0.3),
         ], to: "--proj--/s1.jsonl")
-        let s = scanPi(since: dayStart, root: tmp)
+        let s = scanPi(since: dayStart, root: tmp, catalog: nil)
         XCTAssertTrue(s.available)
         XCTAssertEqual(s.agg.input, 300)
         XCTAssertEqual(s.agg.output, 30)
@@ -274,13 +318,28 @@ final class PiScannerTests: FixtureTestCase {
             entry(ts: beforeRange, input: 999),
             entry(ts: inRange, input: 5, cost: 0.1),
         ], to: "--proj--/s1.jsonl")
-        let s = scanPi(since: dayStart, root: tmp)
+        let s = scanPi(since: dayStart, root: tmp, catalog: nil)
         XCTAssertEqual(s.agg.input, 5)
         XCTAssertEqual(s.agg.cost, 0.1, accuracy: 1e-9)
     }
 
     func testMissingRootIsUnavailable() {
         XCTAssertFalse(scanPi(since: dayStart, root: tmp.appendingPathComponent("nope")).available)
+    }
+
+    func testCatalogRepricesPiMessages() throws {
+        let json = """
+        {"providers":{"anthropic":{"models":{"claude-test":{"input":2,"output":10,"cache_read":0.2,"cache_write":2.5}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try write([
+            entry(ts: inRange, model: "claude-test", input: 1_000_000, output: 1_000_000,
+                  cacheRead: 1_000_000, cacheWrite: 1_000_000, cost: 0),
+        ], to: "--proj--/s1.jsonl")
+
+        let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 14.7, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
     }
 }
 
@@ -329,7 +388,7 @@ final class HourlyBucketTests: FixtureTestCase {
         sqlite3_bind_text(stmt, 1, json, -1, transient)
         XCTAssertEqual(sqlite3_step(stmt), SQLITE_DONE)
 
-        let s = scanOpenCode(since: dayStart, dbPath: dbURL)
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
         XCTAssertEqual(s.buckets.reduce(0, +), 0.4, accuracy: 1e-9)
         XCTAssertEqual(s.buckets[1], 0.4, accuracy: 1e-9)  // "now" is one hour after dayStart
     }
@@ -343,7 +402,7 @@ final class HourlyBucketTests: FixtureTestCase {
         ]
         let line = String(data: try JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
         try write([line], to: "--p--/s.jsonl")
-        let s = scanPi(since: dayStart, root: tmp)
+        let s = scanPi(since: dayStart, root: tmp, catalog: nil)
         XCTAssertEqual(s.buckets.reduce(0, +), 0.7, accuracy: 1e-9)
         XCTAssertEqual(s.buckets[1], 0.7, accuracy: 1e-9)
     }
