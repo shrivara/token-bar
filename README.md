@@ -13,6 +13,7 @@ The numbers roll odometer-style whenever new usage lands. Click the item for a p
 | Tool | Source | Cost |
 |---|---|---|
 | [Claude Code](https://claude.com/claude-code) | `~/.claude/projects/**/*.jsonl` | Computed from bundled models.dev rates |
+| [Codex](https://developers.openai.com/codex/) | `~/.codex/sessions/**/*.jsonl` | Computed from bundled models.dev rates |
 | [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | Computed from bundled models.dev rates, with stored-cost fallback |
 | [pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/sessions/**/*.jsonl` | Computed from bundled models.dev rates, with stored-cost fallback |
 

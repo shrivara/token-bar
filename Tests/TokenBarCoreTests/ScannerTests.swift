@@ -296,6 +296,60 @@ final class OpenCodeScannerTests: FixtureTestCase {
     }
 }
 
+// MARK: - Codex
+
+final class CodexScannerTests: FixtureTestCase {
+    func line(ts: String, type: String, payload: [String: Any]) -> String {
+        let d: [String: Any] = ["timestamp": ts, "type": type, "payload": payload]
+        return String(data: try! JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
+    }
+
+    func testAggregatesRequestDeltasAndSeparatesCachedAndReasoningTokens() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"gpt-test":{"input":2,"output":10,"reasoning":20,"cache_read":0.2}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        try write([
+            line(ts: inRange, type: "turn_context", payload: ["model": "gpt-test"]),
+            line(ts: inRange, type: "event_msg", payload: ["type": "token_count", "info": [
+                "total_token_usage": ["input_tokens": 1_000_000, "cached_input_tokens": 400_000,
+                                      "output_tokens": 300_000, "reasoning_output_tokens": 100_000],
+                "last_token_usage": ["input_tokens": 1_000_000, "cached_input_tokens": 400_000,
+                                     "output_tokens": 300_000, "reasoning_output_tokens": 100_000],
+            ]]),
+        ], to: "2026/01/session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertTrue(s.available)
+        XCTAssertEqual(s.agg.input, 600_000)
+        XCTAssertEqual(s.agg.cacheRead, 400_000)
+        XCTAssertEqual(s.agg.output, 300_000)
+        XCTAssertEqual(s.agg.cost, 5.28, accuracy: 1e-9)
+        XCTAssertEqual(s.buckets.reduce(0, +), s.agg.cost, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
+    func testFallsBackToCumulativeDifferenceForOlderLogs() throws {
+        try write([
+            line(ts: inRange, type: "turn_context", payload: ["model": "gpt-test"]),
+            line(ts: inRange, type: "event_msg", payload: ["type": "token_count", "info": [
+                "total_token_usage": ["input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2],
+            ]]),
+            line(ts: inRange, type: "event_msg", payload: ["type": "token_count", "info": [
+                "total_token_usage": ["input_tokens": 25, "cached_input_tokens": 9, "output_tokens": 5],
+            ]]),
+        ], to: "session.jsonl")
+        let s = scanCodex(since: dayStart, root: tmp, catalog: nil)
+        XCTAssertEqual(s.agg.input, 16)
+        XCTAssertEqual(s.agg.cacheRead, 9)
+        XCTAssertEqual(s.agg.output, 5)
+    }
+
+    func testMissingRootIsUnavailable() {
+        XCTAssertFalse(scanCodex(since: dayStart, root: tmp.appendingPathComponent("nope")).available)
+    }
+}
+
 // MARK: - pi
 
 final class PiScannerTests: FixtureTestCase {

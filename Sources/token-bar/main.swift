@@ -1,4 +1,4 @@
-// token-bar: menu bar readout of today's AI usage (Claude Code, OpenCode, pi).
+// token-bar: menu bar readout of today's AI usage (Claude Code, Codex, OpenCode, pi).
 // Aggregation logic lives in TokenBarCore; this file is the AppKit shell.
 
 import AppKit
@@ -237,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func startWatching() {
         let paths = [claudeProjectsRoot.path,
+                     codexSessionsRoot.path,
                      openCodeDBPath.deletingLastPathComponent().path,
                      piSessionsRoot.path]
             .filter { FileManager.default.fileExists(atPath: $0) }
@@ -313,6 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func scanAll(since: Date, buckets: BucketSpec?) -> [SourceStats] {
         [scanClaudeCode(since: since, buckets: buckets),
+         scanCodex(since: since, buckets: buckets),
          scanOpenCode(since: since, buckets: buckets),
          scanPi(since: since, buckets: buckets)]
     }
@@ -607,7 +609,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.contains("--print") {
     let dayStart = Calendar.current.startOfDay(for: Date())
-    let sources = [scanClaudeCode(since: dayStart), scanOpenCode(since: dayStart), scanPi(since: dayStart)]
+    let sources = [scanClaudeCode(since: dayStart), scanCodex(since: dayStart),
+                   scanOpenCode(since: dayStart), scanPi(since: dayStart)]
     var total = Agg()
     for s in sources { total.add(s.agg) }
     for s in sources where s.available {
