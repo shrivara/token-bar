@@ -190,6 +190,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var sparkView: SparkBarView?
     var panelView: NSStackView?
     var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
+
+    // Left-click shows this info panel; right-click shows the View menu below.
+    let panelMenu = NSMenu()
+
+    // View preferences (right-click menu). object(forKey:) distinguishes an
+    // unset default (nil) from an explicit false, so first launch keeps the
+    // graph and icons on.
+    var showGraph = UserDefaults.standard.object(forKey: "showGraph") as? Bool ?? true
+    var showProviderIcons = UserDefaults.standard.object(forKey: "showProviderIcons") as? Bool ?? true
+    var showFullModelNames = UserDefaults.standard.bool(forKey: "showFullModelNames")
+
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
     var scanPending = false
@@ -224,9 +235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let menu = NSMenu()
-        statusItem.menu = menu
-        observeMenuTracking(menu)
+        observeMenuTracking(panelMenu)
+        // Handle clicks ourselves so left and right can open different menus;
+        // a status item with a static .menu can't tell them apart.
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusItemClicked)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         refresh()
         startWatching()
         // Fallback: catches midnight rollover, missed events, and dirs created after launch
@@ -301,6 +315,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    // Left-click (or the panel) opens the readout; right-click / control-click
+    // opens the View menu. The performClick idiom pops the menu with the usual
+    // button highlight, then we clear .menu so the next click routes here again.
+    @objc func statusItemClicked() {
+        let event = NSApp.currentEvent
+        let wantsViewMenu = event?.type == .rightMouseUp
+            || (event?.modifierFlags.contains(.control) ?? false)
+        statusItem.menu = wantsViewMenu ? makeViewMenu() : panelMenu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    func makeViewMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        func toggle(_ title: String, _ on: Bool, _ selector: Selector) {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.state = on ? .on : .off
+            menu.addItem(item)
+        }
+
+        toggle("Show Spend Graph", showGraph, #selector(toggleGraph))
+        toggle("Show Provider Icons", showProviderIcons, #selector(toggleProviderIcons))
+        toggle("Show Full Model Names", showFullModelNames, #selector(toggleFullModelNames))
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit token-bar", action: #selector(quitClicked), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        return menu
+    }
+
+    // View toggles change the panel's row structure, so force a full rebuild
+    // (the signature check would otherwise only refresh text in place).
+    func applyViewChange(_ key: String, _ value: Bool) {
+        UserDefaults.standard.set(value, forKey: key)
+        menuSignature = ""
+        refresh()
+    }
+
+    @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
+    @objc func toggleProviderIcons() { showProviderIcons.toggle(); applyViewChange("showProviderIcons", showProviderIcons) }
+    @objc func toggleFullModelNames() { showFullModelNames.toggle(); applyViewChange("showFullModelNames", showFullModelNames) }
 
     @objc func quitClicked() { NSApp.terminate(nil) }
 
@@ -389,7 +448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func provider(for source: SourceStats, model: String) -> String {
         let components = model.split(separator: "/")
         if components.count > 1 { return String(components[0]) }
-        return source.name == "Claude Code" ? "anthropic" : source.name
+        return source.name
     }
 
     func activeSources(_ sources: [SourceStats]) -> [SourceStats] {
@@ -463,11 +522,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
-    // Menu skeleton (panel container, separator, Quit) is created once; the
-    // panel's content is rebuilt in place so the menu can stay open.
+    // Menu skeleton (panel container) is created once; the panel's content is
+    // rebuilt in place so the menu can stay open. Quit lives in the View menu.
     func ensureMenuSkeleton() {
-        guard let menu = statusItem.menu, menu.items.isEmpty else { return }
-        menu.autoenablesItems = false
+        guard panelMenu.items.isEmpty else { return }
+        panelMenu.autoenablesItems = false
 
         let panel = NSStackView()
         panel.orientation = .vertical
@@ -478,13 +537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let panelItem = NSMenuItem()
         panelItem.view = panel
-        menu.addItem(panelItem)
-
-        menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
-        quitItem.target = self
-        quitItem.isEnabled = true
-        menu.addItem(quitItem)
+        panelMenu.addItem(panelItem)
     }
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {
@@ -506,8 +559,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return f
         }
 
-        func modelLabel(provider: String, name: String) -> NSStackView {
-            let row = NSStackView(views: [ProviderBadgeView(provider: provider), label(nil, name, size: 12)])
+        func modelLabel(provider: String, name: String) -> NSView {
+            let nameLabel = label(nil, name, size: 12)
+            guard showProviderIcons else { return nameLabel }
+            let row = NSStackView(views: [ProviderBadgeView(provider: provider), nameLabel])
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 5
@@ -549,14 +604,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        color: .secondaryLabelColor, mono: true))
 
         // Spend timeline for the period
-        let cal = Calendar.current
-        let spark = SparkBarView()
-        spark.values = totalBuckets(active)
-        spark.caption = period.caption
-        spark.axis = period.axis(cal: cal, now: Date())
-        sparkView = spark
-        panel.setCustomSpacing(8, after: panel.arrangedSubviews.last!)
-        panel.addArrangedSubview(spark)
+        sparkView = nil
+        if showGraph {
+            let cal = Calendar.current
+            let spark = SparkBarView()
+            spark.values = totalBuckets(active)
+            spark.caption = period.caption
+            spark.axis = period.axis(cal: cal, now: Date())
+            sparkView = spark
+            panel.setCustomSpacing(8, after: panel.arrangedSubviews.last!)
+            panel.addArrangedSubview(spark)
+        }
 
         // Per-source model table. One shared grid keeps the numeric columns
         // aligned across sources; header-row padding does the visual grouping.
@@ -574,8 +632,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              caption("spend"), caption("in"), caption("out"), caption("hit")])
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                     let marker = s.unknownPricing.contains(model) ? "~" : ""
+                    let displayName = showFullModelNames ? model : shortModel(model)
                     rows.append([
-                        modelLabel(provider: provider(for: s, model: model), name: shortModel(model)),
+                        modelLabel(provider: provider(for: s, model: model), name: displayName),
                         label("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost), size: 12,
                               color: .secondaryLabelColor, mono: true, align: .right),
                         label("\(s.name)/\(model)/Input", fmtTokens(a.input), size: 12,
