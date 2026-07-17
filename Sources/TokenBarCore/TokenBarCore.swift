@@ -219,6 +219,7 @@ let fm = FileManager.default
 let home = fm.homeDirectoryForCurrentUser
 
 public let claudeProjectsRoot = home.appendingPathComponent(".claude/projects")
+public let codexSessionsRoot = home.appendingPathComponent(".codex/sessions")
 public let openCodeDBPath = home.appendingPathComponent(".local/share/opencode/opencode.db")
 public let piSessionsRoot = home.appendingPathComponent(".pi/agent/sessions")
 
@@ -328,6 +329,77 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         // Spend timeline: per-entry cost lands in the entry's bucket
         if let h = spec.index(entry.date) {
             s.buckets[h] += cost
+        }
+    }
+    s.finishTotals()
+    return s
+}
+
+public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
+                      buckets: BucketSpec? = nil, catalog: PricingCatalog? = .bundled) -> SourceStats {
+    var s = SourceStats(name: "Codex")
+    let spec = buckets ?? .hours(from: dayStart)
+    s.buckets = [Double](repeating: 0, count: spec.count)
+    guard fm.fileExists(atPath: root.path) else { return s }
+    s.available = true
+
+    let files = jsonlFilesWithDates(under: root)
+    s.dataSince = files.map(\.mtime).min()
+
+    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+        var model = "unknown"
+        var previousTotal: [String: Any]?
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let d = jsonObject(String(line)),
+                  let ts = d["timestamp"] as? String,
+                  let date = parseISO(ts)
+            else { continue }
+            let payload = d["payload"] as? [String: Any] ?? [:]
+            if d["type"] as? String == "turn_context",
+               let nextModel = payload["model"] as? String, !nextModel.isEmpty {
+                model = nextModel
+                continue
+            }
+            guard d["type"] as? String == "event_msg",
+                  payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let total = info["total_token_usage"] as? [String: Any]
+            else { continue }
+
+            // Newer Codex logs include the exact delta for this request. For older
+            // logs, derive it from the session's cumulative counters.
+            let usage: [String: Any]
+            if let last = info["last_token_usage"] as? [String: Any] {
+                usage = last
+            } else {
+                var delta: [String: Any] = [:]
+                for key in ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"] {
+                    delta[key] = max(0, num(total[key]) - num(previousTotal?[key]))
+                }
+                usage = delta
+            }
+            previousTotal = total
+            guard date >= dayStart else { continue }
+
+            let inputTotal = num(usage["input_tokens"])
+            let cacheRead = num(usage["cached_input_tokens"])
+            let outputTotal = num(usage["output_tokens"])
+            let reasoning = num(usage["reasoning_output_tokens"])
+            let input = max(0, inputTotal - cacheRead)
+            let output = max(0, outputTotal - reasoning)
+            let key = modelKey(provider: "openai", model: model)
+            var a = s.perModel[key] ?? Agg()
+            a.input += input
+            a.cacheRead += cacheRead
+            a.output += outputTotal
+            let cost = catalogPrice(PricedUsage(input: input, output: output, reasoning: reasoning,
+                                                cacheRead: cacheRead, cacheWrite: 0),
+                                    provider: "openai", model: model, catalog: catalog) ?? 0
+            a.cost += cost
+            s.perModel[key] = a
+            if catalog?.model(provider: "openai", id: model) == nil { s.unknownPricing.insert(key) }
+            if let i = spec.index(date) { s.buckets[i] += cost }
         }
     }
     s.finishTotals()
