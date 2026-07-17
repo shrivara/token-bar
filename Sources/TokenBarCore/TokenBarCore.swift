@@ -234,8 +234,44 @@ let isoFrac: ISO8601DateFormatter = {
 }()
 let isoPlain = ISO8601DateFormatter()
 
+// ISO8601DateFormatter is the dominant scan cost (~7x the JSON parse across a
+// year of logs), so hand-parse the fixed UTC format the harnesses actually emit
+// - "2026-07-17T07:45:39.120Z" - and fall back to the formatter for anything else.
+func fastISO8601(_ s: String) -> Date? {
+    let u = Array(s.utf8)
+    guard u.count >= 20, u[u.count - 1] == 0x5A else { return nil }  // must end in 'Z'
+    func digit(_ i: Int) -> Int? { let c = u[i]; return (0x30...0x39).contains(c) ? Int(c - 0x30) : nil }
+    func n(_ i: Int, _ len: Int) -> Int? {
+        var v = 0
+        for j in i..<(i + len) { guard let d = digit(j) else { return nil }; v = v * 10 + d }
+        return v
+    }
+    guard u[4] == 0x2D, u[7] == 0x2D, u[10] == 0x54, u[13] == 0x3A, u[16] == 0x3A,  // - - T : :
+          let year = n(0, 4), let month = n(5, 2), let day = n(8, 2),
+          let hour = n(11, 2), let minute = n(14, 2), let second = n(17, 2)
+    else { return nil }
+
+    var frac = 0.0
+    if u[19] == 0x2E {  // '.' fractional seconds, then 'Z'
+        var scale = 0.1, i = 20
+        while i < u.count, let d = digit(i) { frac += Double(d) * scale; scale /= 10; i += 1 }
+        guard i == u.count - 1 else { return nil }  // only 'Z' may follow the fraction
+    } else {
+        guard u.count == 20 else { return nil }  // "…SSZ" exactly
+    }
+
+    // Days from civil date (Howard Hinnant's algorithm), UTC.
+    let y = month <= 2 ? year - 1 : year
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yoe = y - era * 400
+    let doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    let days = era * 146097 + doe - 719468
+    return Date(timeIntervalSince1970: Double(days * 86400 + hour * 3600 + minute * 60 + second) + frac)
+}
+
 func parseISO(_ s: String) -> Date? {
-    isoFrac.date(from: s) ?? isoPlain.date(from: s)
+    fastISO8601(s) ?? isoFrac.date(from: s) ?? isoPlain.date(from: s)
 }
 
 func jsonObject(_ line: String) -> [String: Any]? {
