@@ -75,44 +75,142 @@ public struct BucketSpec {
     }
 }
 
-// MARK: - Claude pricing (per MTok; Claude API reference, cached 2026-06-24)
+// MARK: - Bundled model pricing (USD per MTok)
 
 public struct Rates: Equatable {
     public let inPerM: Double
     public let outPerM: Double
-    public init(inPerM: Double, outPerM: Double) { self.inPerM = inPerM; self.outPerM = outPerM }
+    public let cacheReadPerM: Double
+    public let cacheWritePerM: Double
+    public let reasoningPerM: Double
+
+    public init(inPerM: Double, outPerM: Double, cacheReadPerM: Double? = nil,
+                cacheWritePerM: Double? = nil, reasoningPerM: Double? = nil) {
+        self.inPerM = inPerM
+        self.outPerM = outPerM
+        self.cacheReadPerM = cacheReadPerM ?? inPerM * 0.1
+        self.cacheWritePerM = cacheWritePerM ?? inPerM * 1.25
+        self.reasoningPerM = reasoningPerM ?? outPerM
+    }
 }
 
-public let opusFallbackRates = Rates(inPerM: 5, outPerM: 25)
-
-public func claudeRates(for model: String, now: Date = Date()) -> Rates? {
-    // Sonnet 5 intro pricing runs through 2026-08-31
-    var comps = DateComponents(); comps.year = 2026; comps.month = 9; comps.day = 1
-    let introEnd = Calendar.current.date(from: comps) ?? .distantPast
-    let sonnet5 = now < introEnd ? Rates(inPerM: 2, outPerM: 10) : Rates(inPerM: 3, outPerM: 15)
-
-    let table: [(String, Rates)] = [
-        ("claude-fable-5", Rates(inPerM: 10, outPerM: 50)),
-        ("claude-mythos-5", Rates(inPerM: 10, outPerM: 50)),
-        ("claude-opus-4", Rates(inPerM: 5, outPerM: 25)),
-        ("claude-sonnet-5", sonnet5),
-        ("claude-sonnet-4", Rates(inPerM: 3, outPerM: 15)),
-        ("claude-haiku-4-5", Rates(inPerM: 1, outPerM: 5)),
-    ]
-    var best: (len: Int, rates: Rates)? = nil
-    for (prefix, rates) in table where model.hasPrefix(prefix) {
-        if best == nil || prefix.count > best!.len { best = (prefix.count, rates) }
+public struct PricingCatalog: Decodable {
+    public struct Provider: Decodable {
+        let models: [String: Model]
     }
-    return best?.rates
+
+    public struct Model: Decodable {
+        let input: Double
+        let output: Double
+        let reasoning: Double?
+        let cacheRead: Double?
+        let cacheWrite: Double?
+        let tiers: [Tier]?
+
+        enum CodingKeys: String, CodingKey {
+            case input, output, reasoning, tiers
+            case cacheRead = "cache_read"
+            case cacheWrite = "cache_write"
+        }
+    }
+
+    public struct Tier: Decodable {
+        let input: Double
+        let output: Double
+        let reasoning: Double?
+        let cacheRead: Double?
+        let cacheWrite: Double?
+        let tier: Threshold
+
+        enum CodingKeys: String, CodingKey {
+            case input, output, reasoning, tier
+            case cacheRead = "cache_read"
+            case cacheWrite = "cache_write"
+        }
+    }
+
+    public struct Threshold: Decodable {
+        let type: String
+        let size: Double
+    }
+
+    let providers: [String: Provider]
+
+    public static let bundled: PricingCatalog? = {
+        guard let url = Bundle.module.url(forResource: "model-pricing", withExtension: "json"),
+              let data = try? Data(contentsOf: url)
+        else { return nil }
+        return try? JSONDecoder().decode(PricingCatalog.self, from: data)
+    }()
+
+    func model(provider: String, id: String) -> Model? {
+        providers[provider]?.models[id]
+    }
+}
+
+private struct PricedUsage {
+    let input: Double
+    let output: Double
+    let reasoning: Double
+    let cacheRead: Double
+    let cacheWrite: Double
+
+    var context: Double { input + cacheRead + cacheWrite }
+}
+
+private func price(_ usage: PricedUsage, model: PricingCatalog.Model) -> Double? {
+    let tier = model.tiers?
+        .filter { $0.tier.type == "context" && usage.context > $0.tier.size }
+        .max { $0.tier.size < $1.tier.size }
+
+    let input = tier?.input ?? model.input
+    let output = tier?.output ?? model.output
+    let reasoning = tier?.reasoning ?? model.reasoning ?? output
+    guard usage.cacheRead == 0 || (tier?.cacheRead ?? model.cacheRead) != nil,
+          usage.cacheWrite == 0 || (tier?.cacheWrite ?? model.cacheWrite) != nil
+    else { return nil }
+
+    let inputCost = usage.input * input
+    let outputCost = usage.output * output
+    let reasoningCost = usage.reasoning * reasoning
+    let cacheReadCost = usage.cacheRead * (tier?.cacheRead ?? model.cacheRead ?? 0)
+    let cacheWriteCost = usage.cacheWrite * (tier?.cacheWrite ?? model.cacheWrite ?? 0)
+    return (inputCost + outputCost + reasoningCost + cacheReadCost + cacheWriteCost) / 1_000_000
+}
+
+private func providerID(_ raw: String) -> String {
+    switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "amazon bedrock", "amazon_bedrock", "aws-bedrock", "bedrock": return "amazon-bedrock"
+    case "openai", "open ai", "open_ai": return "openai"
+    default: return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
+private func modelKey(provider: String, model: String) -> String {
+    "\(provider)/\(model)"
+}
+
+private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
+                          catalog: PricingCatalog?) -> Double? {
+    guard let model = catalog?.model(provider: providerID(provider), id: model) else { return nil }
+    return price(usage, model: model)
+}
+
+// The bundle is expected to be present, but Claude Code has no stored cost if it is not.
+private let opusFallbackRates = Rates(inPerM: 5, outPerM: 25, cacheReadPerM: 0.5, cacheWritePerM: 6.25)
+
+public func claudeRates(for model: String, catalog: PricingCatalog? = .bundled) -> Rates? {
+    guard let model = catalog?.model(provider: "anthropic", id: model) else { return nil }
+    return Rates(inPerM: model.input, outPerM: model.output, cacheReadPerM: model.cacheRead,
+                 cacheWritePerM: model.cacheWrite, reasoningPerM: model.reasoning)
 }
 
 public func claudeCost(_ a: Agg, _ r: Rates) -> Double {
-    // Cache multipliers on the input rate: read 0.1x, 5m write 1.25x, 1h write 2x
     return (a.input * r.inPerM
         + a.output * r.outPerM
-        + a.cacheRead * r.inPerM * 0.1
-        + a.cacheWrite5m * r.inPerM * 1.25
-        + a.cacheWrite1h * r.inPerM * 2.0) / 1_000_000
+        + a.cacheRead * r.cacheReadPerM
+        + a.cacheWrite5m * r.cacheWritePerM
+        + a.cacheWrite1h * r.cacheWritePerM) / 1_000_000
 }
 
 // MARK: - Shared helpers
@@ -173,7 +271,7 @@ public func fmtMoney(_ d: Double) -> String { String(format: "$%.2f", d) }
 // MARK: - Source scanners
 
 public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
-                           now: Date = Date(), buckets: BucketSpec? = nil) -> SourceStats {
+                            buckets: BucketSpec? = nil, catalog: PricingCatalog? = .bundled) -> SourceStats {
     var s = SourceStats(name: "Claude Code")
     let spec = buckets ?? .hours(from: dayStart)
     s.buckets = [Double](repeating: 0, count: spec.count)
@@ -216,29 +314,28 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         }
         var a = s.perModel[entry.model] ?? Agg()
         a.add(e)
+        let usage = PricedUsage(input: e.input, output: e.output, reasoning: 0,
+                                cacheRead: e.cacheRead, cacheWrite: e.cacheWrite)
+        let catalogCost = catalogPrice(usage, provider: "anthropic", model: entry.model, catalog: catalog)
+        let cost = catalogCost
+            ?? catalogPrice(usage, provider: "anthropic", model: "claude-opus-4-6", catalog: catalog)
+            ?? claudeCost(e, opusFallbackRates)
+        a.cost += cost
         s.perModel[entry.model] = a
+        if catalogCost == nil {
+            s.unknownPricing.insert(entry.model)
+        }
         // Spend timeline: per-entry cost lands in the entry's bucket
         if let h = spec.index(entry.date) {
-            let r = claudeRates(for: entry.model, now: now) ?? opusFallbackRates
-            s.buckets[h] += claudeCost(e, r)
+            s.buckets[h] += cost
         }
-    }
-
-    for (model, var a) in s.perModel {
-        if let r = claudeRates(for: model, now: now) {
-            a.cost = claudeCost(a, r)
-        } else {
-            a.cost = claudeCost(a, opusFallbackRates)
-            s.unknownPricing.insert(model)
-        }
-        s.perModel[model] = a
     }
     s.finishTotals()
     return s
 }
 
 public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
-                         buckets: BucketSpec? = nil) -> SourceStats {
+                          buckets: BucketSpec? = nil, catalog: PricingCatalog? = .bundled) -> SourceStats {
     var s = SourceStats(name: "OpenCode")
     let spec = buckets ?? .hours(from: dayStart)
     s.buckets = [Double](repeating: 0, count: spec.count)
@@ -271,19 +368,36 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
               d["role"] as? String == "assistant",
               let tokens = d["tokens"] as? [String: Any]
         else { continue }
+        let provider = providerID((d["providerID"] as? String) ?? "unknown")
         let model = (d["modelID"] as? String) ?? "unknown"
-        var a = s.perModel[model] ?? Agg()
-        a.input += num(tokens["input"])
-        a.output += num(tokens["output"]) + num(tokens["reasoning"])  // reasoning bills as output
+        let key = modelKey(provider: provider, model: model)
+        var a = s.perModel[key] ?? Agg()
+        let input = num(tokens["input"])
+        let output = num(tokens["output"])
+        let reasoning = num(tokens["reasoning"])
+        a.input += input
+        a.output += output + reasoning
+        var cacheRead = 0.0
+        var cacheWrite = 0.0
         if let cache = tokens["cache"] as? [String: Any] {
-            a.cacheRead += num(cache["read"])
-            a.cacheWrite5m += num(cache["write"])
+            cacheRead = num(cache["read"])
+            cacheWrite = num(cache["write"])
+            a.cacheRead += cacheRead
+            a.cacheWrite5m += cacheWrite
         }
-        a.cost += num(d["cost"])  // OpenCode pre-computes cost per message
-        s.perModel[model] = a
+        let usage = PricedUsage(input: input, output: output, reasoning: reasoning,
+                                cacheRead: cacheRead, cacheWrite: cacheWrite)
+        let catalogCost = catalogPrice(usage, provider: provider, model: model, catalog: catalog)
+        let cost = catalogCost
+            ?? num(d["cost"])
+        a.cost += cost
+        s.perModel[key] = a
+        if catalogCost == nil {
+            s.unknownPricing.insert(key)
+        }
         if let time = d["time"] as? [String: Any], num(time["created"]) > 0,
            let h = spec.index(Date(timeIntervalSince1970: num(time["created"]) / 1000)) {
-            s.buckets[h] += num(d["cost"])
+            s.buckets[h] += cost
         }
     }
     s.finishTotals()
@@ -291,7 +405,7 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
 }
 
 public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
-                   buckets: BucketSpec? = nil) -> SourceStats {
+                   buckets: BucketSpec? = nil, catalog: PricingCatalog? = .bundled) -> SourceStats {
     var s = SourceStats(name: "pi")
     let spec = buckets ?? .hours(from: dayStart)
     s.buckets = [Double](repeating: 0, count: spec.count)
@@ -312,19 +426,29 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
                   let ts = d["timestamp"] as? String,
                   let date = parseISO(ts), date >= dayStart
             else { continue }
+            let provider = providerID((msg["provider"] as? String) ?? "unknown")
             let model = (msg["model"] as? String) ?? "unknown"
-            var a = s.perModel[model] ?? Agg()
-            a.input += num(usage["input"])
-            a.output += num(usage["output"])
-            a.cacheRead += num(usage["cacheRead"])
-            a.cacheWrite5m += num(usage["cacheWrite"])
-            if let cost = usage["cost"] as? [String: Any] {
-                a.cost += num(cost["total"])  // pi pre-computes cost per message
-                if let h = spec.index(date) {
-                    s.buckets[h] += num(cost["total"])
-                }
+            let key = modelKey(provider: provider, model: model)
+            var a = s.perModel[key] ?? Agg()
+            let input = num(usage["input"])
+            let output = num(usage["output"])
+            let cacheRead = num(usage["cacheRead"])
+            let cacheWrite = num(usage["cacheWrite"])
+            a.input += input
+            a.output += output
+            a.cacheRead += cacheRead
+            a.cacheWrite5m += cacheWrite
+            let catalogCost = catalogPrice(PricedUsage(input: input, output: output, reasoning: 0,
+                                                        cacheRead: cacheRead, cacheWrite: cacheWrite),
+                                           provider: provider, model: model, catalog: catalog)
+            let storedCost = (usage["cost"] as? [String: Any]).map { num($0["total"]) } ?? 0
+            let cost = catalogCost ?? storedCost
+            a.cost += cost
+            if let h = spec.index(date) {
+                s.buckets[h] += cost
             }
-            s.perModel[model] = a
+            if catalogCost == nil { s.unknownPricing.insert(key) }
+            s.perModel[key] = a
         }
     }
     s.finishTotals()

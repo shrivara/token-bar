@@ -12,9 +12,9 @@ The numbers roll odometer-style whenever new usage lands. Click the item for a p
 
 | Tool | Source | Cost |
 |---|---|---|
-| [Claude Code](https://claude.com/claude-code) | `~/.claude/projects/**/*.jsonl` | Computed from published API rates |
-| [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | OpenCode's own per-message cost |
-| [pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/sessions/**/*.jsonl` | pi's own per-message cost |
+| [Claude Code](https://claude.com/claude-code) | `~/.claude/projects/**/*.jsonl` | Computed from bundled models.dev rates |
+| [OpenCode](https://opencode.ai) | `~/.local/share/opencode/opencode.db` | Computed from bundled models.dev rates, with stored-cost fallback |
+| [pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/sessions/**/*.jsonl` | Computed from bundled models.dev rates, with stored-cost fallback |
 
 Updates are instant: file-system events fire the moment a session writes new usage (coalesced to at most about one refresh per second while streaming), with a 60s timer as backstop and for the midnight rollover. Tools with no activity today are hidden from the panel.
 
@@ -51,8 +51,12 @@ Prints today's per-model breakdown and totals to stdout, then exits.
 ## Notes
 
 - Spend is API-equivalent pricing. If you're on a subscription plan (e.g. Claude Max), the dollar figure shows what the usage *would* cost via the API, not what you're billed.
-- OpenCode and pi record their own per-message cost (covering any provider they support), so token-bar just sums those. Claude Code logs tokens only, so Claude pricing is a small hardcoded table in `Sources/token-bar/main.swift`; unknown models fall back to Opus rates and are marked `~` in the panel.
-- Everything is read locally. No network access, no telemetry.
+- API-equivalent pricing comes from an offline snapshot of [models.dev](https://models.dev/), bundled with the app under its MIT license. Prices are looked up by provider and model for every message, including cache and reasoning tokens. Models without a complete catalog price use the tool's recorded cost where available and are marked `~` in the panel. Unknown Claude models use the bundled Claude Opus 4.6 rate and are marked `~`.
+- Everything is read locally at runtime. No network access, no telemetry.
+
+## Updating prices
+
+Run `./Scripts/update-model-pricing.sh` to fetch the current models.dev catalog and regenerate the checked-in pricing snapshot. Review and commit the resulting JSON with the release; normal builds do not fetch the network.
 
 ## License
 
