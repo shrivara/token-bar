@@ -602,8 +602,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             b.attributedTitle = NSAttributedString(
                 string: p.letter,
                 attributes: [
-                    .font: NSFont.systemFont(ofSize: 11, weight: p == period ? .bold : .regular),
-                    .foregroundColor: p == period ? NSColor.labelColor : NSColor.tertiaryLabelColor,
+                    .font: NSFont.systemFont(ofSize: 11, weight: p == period ? .semibold : .regular),
+                    .foregroundColor: p == period ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
                 ])
             switcher.addArrangedSubview(b)
         }
