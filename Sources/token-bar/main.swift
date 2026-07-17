@@ -450,6 +450,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func provider(for source: SourceStats, model: String) -> String {
         let components = model.split(separator: "/")
         if components.count > 1 { return String(components[0]) }
+        // Claude Code logs bare model ids (no provider prefix); they're all
+        // Anthropic, so map the source to that glyph instead of "Claude Code".
+        if source.name == "Claude Code" { return "anthropic" }
         return source.name
     }
 
