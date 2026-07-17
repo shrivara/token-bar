@@ -5,7 +5,8 @@ final class PricingTests: XCTestCase {
     func testBundledCatalogResolvesExactClaudeModels() {
         XCTAssertEqual(claudeRates(for: "claude-fable-5"), Rates(inPerM: 10, outPerM: 50))
         XCTAssertEqual(claudeRates(for: "claude-opus-4-6"), Rates(inPerM: 5, outPerM: 25))
-        XCTAssertEqual(claudeRates(for: "claude-sonnet-4-6"), Rates(inPerM: 3, outPerM: 15))
+        XCTAssertEqual(claudeRates(for: "claude-sonnet-4-6"),
+                       Rates(inPerM: 3, outPerM: 15, cacheReadPerM: 0.3, cacheWritePerM: 3.75))
         XCTAssertEqual(claudeRates(for: "claude-haiku-4-5-20251001"), Rates(inPerM: 1, outPerM: 5))
     }
 

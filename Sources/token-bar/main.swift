@@ -141,6 +141,41 @@ final class SparkBarView: NSView {
     }
 }
 
+final class ProviderBadgeView: NSView {
+    let monogram: String
+    let image: NSImage?
+
+    init(provider: String) {
+        let knownMonograms = ["openrouter": "OR"]
+        monogram = knownMonograms[provider.lowercased()]
+            ?? String(provider.uppercased().filter(\.isLetter).prefix(2))
+        image = Bundle.module.url(forResource: provider.lowercased(), withExtension: "svg")
+            .flatMap(NSImage.init(contentsOf:))
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 14, height: 14) }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if let image {
+            image.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1)
+            return
+        }
+        NSColor.tertiaryLabelColor.withAlphaComponent(0.2).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 7, weight: .bold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let size = (monogram as NSString).size(withAttributes: attributes)
+        (monogram as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2,
+                                                y: (bounds.height - size.height) / 2),
+                                     withAttributes: attributes)
+    }
+}
+
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -348,7 +383,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func shortModel(_ model: String) -> String {
-        model.hasPrefix("claude-") ? String(model.dropFirst("claude-".count)) : model
+        model.split(separator: "/").last.map(String.init) ?? model
+    }
+
+    func provider(for source: SourceStats, model: String) -> String {
+        let components = model.split(separator: "/")
+        if components.count > 1 { return String(components[0]) }
+        return source.name == "Claude Code" ? "anthropic" : source.name
     }
 
     func activeSources(_ sources: [SourceStats]) -> [SourceStats] {
@@ -465,6 +506,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return f
         }
 
+        func modelLabel(provider: String, name: String) -> NSStackView {
+            let row = NSStackView(views: [ProviderBadgeView(provider: provider), label(nil, name, size: 12)])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 5
+            return row
+        }
+
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
         let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
@@ -526,7 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                     let marker = s.unknownPricing.contains(model) ? "~" : ""
                     rows.append([
-                        label(nil, shortModel(model), size: 12),
+                        modelLabel(provider: provider(for: s, model: model), name: shortModel(model)),
                         label("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost), size: 12,
                               color: .secondaryLabelColor, mono: true, align: .right),
                         label("\(s.name)/\(model)/Input", fmtTokens(a.input), size: 12,

@@ -9,7 +9,12 @@ let package = Package(
             name: "TokenBarCore",
             resources: [.process("Resources")]
         ),
-        .executableTarget(name: "token-bar", dependencies: ["TokenBarCore"], path: "Sources/token-bar"),
+        .executableTarget(
+            name: "token-bar",
+            dependencies: ["TokenBarCore"],
+            path: "Sources/token-bar",
+            resources: [.process("Resources")]
+        ),
         .testTarget(name: "TokenBarCoreTests", dependencies: ["TokenBarCore"]),
     ]
 )
