@@ -196,9 +196,6 @@ private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
     return price(usage, model: model)
 }
 
-// The bundle is expected to be present, but Claude Code has no stored cost if it is not.
-private let opusFallbackRates = Rates(inPerM: 5, outPerM: 25, cacheReadPerM: 0.5, cacheWritePerM: 6.25)
-
 public func claudeRates(for model: String, catalog: PricingCatalog? = .bundled) -> Rates? {
     guard let model = catalog?.model(provider: "anthropic", id: model) else { return nil }
     return Rates(inPerM: model.input, outPerM: model.output, cacheReadPerM: model.cacheRead,
@@ -318,9 +315,9 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         let usage = PricedUsage(input: e.input, output: e.output, reasoning: 0,
                                 cacheRead: e.cacheRead, cacheWrite: e.cacheWrite)
         let catalogCost = catalogPrice(usage, provider: "anthropic", model: entry.model, catalog: catalog)
-        let cost = catalogCost
-            ?? catalogPrice(usage, provider: "anthropic", model: "claude-opus-4-6", catalog: catalog)
-            ?? claudeCost(e, opusFallbackRates)
+        // No pricing fallback: an uncatalogued model contributes $0 and is
+        // flagged unknown (shown with a ~ marker) rather than guessed at.
+        let cost = catalogCost ?? 0
         a.cost += cost
         s.perModel[entry.model] = a
         if catalogCost == nil {
@@ -460,8 +457,8 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
         let usage = PricedUsage(input: input, output: output, reasoning: reasoning,
                                 cacheRead: cacheRead, cacheWrite: cacheWrite)
         let catalogCost = catalogPrice(usage, provider: provider, model: model, catalog: catalog)
-        let cost = catalogCost
-            ?? num(d["cost"])
+        // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
+        let cost = catalogCost ?? 0
         a.cost += cost
         s.perModel[key] = a
         if catalogCost == nil {
@@ -513,8 +510,8 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
             let catalogCost = catalogPrice(PricedUsage(input: input, output: output, reasoning: 0,
                                                         cacheRead: cacheRead, cacheWrite: cacheWrite),
                                            provider: provider, model: model, catalog: catalog)
-            let storedCost = (usage["cost"] as? [String: Any]).map { num($0["total"]) } ?? 0
-            let cost = catalogCost ?? storedCost
+            // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
+            let cost = catalogCost ?? 0
             a.cost += cost
             if let h = spec.index(date) {
                 s.buckets[h] += cost
