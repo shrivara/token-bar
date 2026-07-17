@@ -302,6 +302,65 @@ public func fmtTokens(_ n: Double) -> String {
 
 public func fmtMoney(_ d: Double) -> String { String(format: "$%.2f", d) }
 
+// MARK: - Parse cache
+
+// Reading and JSON/date-parsing the .jsonl logs dominates a scan, and a period
+// switch re-scans the very same files. This caches each file's parsed entries
+// keyed by URL + mtime: a period switch reuses everything, and a file change
+// only re-parses the file that changed. Entries are unfiltered by date so one
+// cache serves every period; each scanner windows them per request.
+final class ParseCache<Entry> {
+    private let lock = NSLock()
+    private var store: [URL: (mtime: Date, entries: [Entry])] = [:]
+
+    func entries(_ url: URL, mtime: Date, parse: (String) -> [Entry]) -> [Entry] {
+        lock.lock()
+        if let cached = store[url], cached.mtime == mtime {
+            defer { lock.unlock() }
+            return cached.entries
+        }
+        lock.unlock()
+
+        let parsed = (try? String(contentsOf: url, encoding: .utf8)).map(parse) ?? []
+        lock.lock()
+        store[url] = (mtime, parsed)
+        lock.unlock()
+        return parsed
+    }
+
+    func prune(keeping urls: [URL]) {
+        let live = Set(urls)
+        lock.lock()
+        store = store.filter { live.contains($0.key) }
+        lock.unlock()
+    }
+}
+
+struct ClaudeEntry {
+    let key: String       // request+message id, for streaming de-duplication
+    let model: String
+    let usage: [String: Any]
+    let date: Date
+}
+struct CodexEntry {
+    let model: String
+    let input, cacheRead, outputTotal, reasoning: Double
+    let date: Date
+}
+struct PiEntry {
+    let provider, model: String
+    let input, output, cacheRead, cacheWrite: Double
+    let date: Date
+}
+
+private let claudeParseCache = ParseCache<ClaudeEntry>()
+private let codexParseCache = ParseCache<CodexEntry>()
+private let piParseCache = ParseCache<PiEntry>()
+
+private func lines(_ text: String) -> [Substring] {
+    text.split(separator: "\n", omittingEmptySubsequences: true)
+}
+
 // MARK: - Source scanners
 
 public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
@@ -314,23 +373,28 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
 
     let files = jsonlFilesWithDates(under: root)
     s.dataSince = files.map(\.mtime).min()
+    claudeParseCache.prune(keeping: files.map(\.url))
 
     // Streaming rewrites the same request multiple times; keep the last entry per request+message.
     var dedup: [String: (model: String, usage: [String: Any], date: Date)] = [:]
-    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = jsonObject(String(line)),
-                  d["type"] as? String == "assistant",
-                  let msg = d["message"] as? [String: Any],
-                  let usage = msg["usage"] as? [String: Any],
-                  let model = msg["model"] as? String, model != "<synthetic>",
-                  let ts = d["timestamp"] as? String,
-                  let date = parseISO(ts), date >= dayStart
-            else { continue }
-            let req = (d["requestId"] as? String) ?? (d["uuid"] as? String) ?? ts
-            let key = req + ":" + ((msg["id"] as? String) ?? "")
-            dedup[key] = (model, usage, date)
+    for (url, mtime) in files where mtime >= dayStart {
+        let entries = claudeParseCache.entries(url, mtime: mtime) { text in
+            lines(text).compactMap { line -> ClaudeEntry? in
+                guard let d = jsonObject(String(line)),
+                      d["type"] as? String == "assistant",
+                      let msg = d["message"] as? [String: Any],
+                      let usage = msg["usage"] as? [String: Any],
+                      let model = msg["model"] as? String, model != "<synthetic>",
+                      let ts = d["timestamp"] as? String,
+                      let date = parseISO(ts)
+                else { return nil }
+                let req = (d["requestId"] as? String) ?? (d["uuid"] as? String) ?? ts
+                return ClaudeEntry(key: req + ":" + ((msg["id"] as? String) ?? ""),
+                                   model: model, usage: usage, date: date)
+            }
+        }
+        for e in entries where e.date >= dayStart {
+            dedup[e.key] = (e.model, e.usage, e.date)
         }
     }
 
@@ -378,61 +442,71 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
 
     let files = jsonlFilesWithDates(under: root)
     s.dataSince = files.map(\.mtime).min()
+    codexParseCache.prune(keeping: files.map(\.url))
 
-    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-        var model = "unknown"
-        var previousTotal: [String: Any]?
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = jsonObject(String(line)),
-                  let ts = d["timestamp"] as? String,
-                  let date = parseISO(ts)
-            else { continue }
-            let payload = d["payload"] as? [String: Any] ?? [:]
-            if d["type"] as? String == "turn_context",
-               let nextModel = payload["model"] as? String, !nextModel.isEmpty {
-                model = nextModel
-                continue
-            }
-            guard d["type"] as? String == "event_msg",
-                  payload["type"] as? String == "token_count",
-                  let info = payload["info"] as? [String: Any],
-                  let total = info["total_token_usage"] as? [String: Any]
-            else { continue }
-
-            // Newer Codex logs include the exact delta for this request. For older
-            // logs, derive it from the session's cumulative counters.
-            let usage: [String: Any]
-            if let last = info["last_token_usage"] as? [String: Any] {
-                usage = last
-            } else {
-                var delta: [String: Any] = [:]
-                for key in ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"] {
-                    delta[key] = max(0, num(total[key]) - num(previousTotal?[key]))
+    for (url, mtime) in files where mtime >= dayStart {
+        // The delta between cumulative counters is sequential per file, so the
+        // whole file is parsed (and cached) at once; the loop below windows it.
+        let entries = codexParseCache.entries(url, mtime: mtime) { text in
+            var out: [CodexEntry] = []
+            var model = "unknown"
+            var previousTotal: [String: Any]?
+            for line in lines(text) {
+                guard let d = jsonObject(String(line)),
+                      let ts = d["timestamp"] as? String,
+                      let date = parseISO(ts)
+                else { continue }
+                let payload = d["payload"] as? [String: Any] ?? [:]
+                if d["type"] as? String == "turn_context",
+                   let nextModel = payload["model"] as? String, !nextModel.isEmpty {
+                    model = nextModel
+                    continue
                 }
-                usage = delta
-            }
-            previousTotal = total
-            guard date >= dayStart else { continue }
+                guard d["type"] as? String == "event_msg",
+                      payload["type"] as? String == "token_count",
+                      let info = payload["info"] as? [String: Any],
+                      let total = info["total_token_usage"] as? [String: Any]
+                else { continue }
 
-            let inputTotal = num(usage["input_tokens"])
-            let cacheRead = num(usage["cached_input_tokens"])
-            let outputTotal = num(usage["output_tokens"])
-            let reasoning = num(usage["reasoning_output_tokens"])
-            let input = max(0, inputTotal - cacheRead)
-            let output = max(0, outputTotal - reasoning)
-            let key = modelKey(provider: "openai", model: model)
+                // Newer Codex logs include the exact delta for this request. For older
+                // logs, derive it from the session's cumulative counters.
+                let usage: [String: Any]
+                if let last = info["last_token_usage"] as? [String: Any] {
+                    usage = last
+                } else {
+                    var delta: [String: Any] = [:]
+                    for key in ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"] {
+                        delta[key] = max(0, num(total[key]) - num(previousTotal?[key]))
+                    }
+                    usage = delta
+                }
+                previousTotal = total
+
+                let cacheRead = num(usage["cached_input_tokens"])
+                out.append(CodexEntry(model: model,
+                                      input: max(0, num(usage["input_tokens"]) - cacheRead),
+                                      cacheRead: cacheRead,
+                                      outputTotal: num(usage["output_tokens"]),
+                                      reasoning: num(usage["reasoning_output_tokens"]),
+                                      date: date))
+            }
+            return out
+        }
+
+        for e in entries where e.date >= dayStart {
+            let output = max(0, e.outputTotal - e.reasoning)
+            let key = modelKey(provider: "openai", model: e.model)
             var a = s.perModel[key] ?? Agg()
-            a.input += input
-            a.cacheRead += cacheRead
-            a.output += outputTotal
-            let cost = catalogPrice(PricedUsage(input: input, output: output, reasoning: reasoning,
-                                                cacheRead: cacheRead, cacheWrite: 0),
-                                    provider: "openai", model: model, catalog: catalog) ?? 0
+            a.input += e.input
+            a.cacheRead += e.cacheRead
+            a.output += e.outputTotal
+            let cost = catalogPrice(PricedUsage(input: e.input, output: output, reasoning: e.reasoning,
+                                                cacheRead: e.cacheRead, cacheWrite: 0),
+                                    provider: "openai", model: e.model, catalog: catalog) ?? 0
             a.cost += cost
             s.perModel[key] = a
-            if catalog?.model(provider: "openai", id: model) == nil { s.unknownPricing.insert(key) }
-            if let i = spec.index(date) { s.buckets[i] += cost }
+            if catalog?.model(provider: "openai", id: e.model) == nil { s.unknownPricing.insert(key) }
+            if let i = spec.index(e.date) { s.buckets[i] += cost }
         }
     }
     s.finishTotals()
@@ -519,37 +593,41 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
 
     let files = jsonlFilesWithDates(under: root)
     s.dataSince = files.map(\.mtime).min()
+    piParseCache.prune(keeping: files.map(\.url))
 
-    for file in files.filter({ $0.mtime >= dayStart }).map(\.url) {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let d = jsonObject(String(line)),
-                  d["type"] as? String == "message",
-                  let msg = d["message"] as? [String: Any],
-                  msg["role"] as? String == "assistant",
-                  let usage = msg["usage"] as? [String: Any],
-                  let ts = d["timestamp"] as? String,
-                  let date = parseISO(ts), date >= dayStart
-            else { continue }
-            let provider = providerID((msg["provider"] as? String) ?? "unknown")
-            let model = (msg["model"] as? String) ?? "unknown"
-            let key = modelKey(provider: provider, model: model)
+    for (url, mtime) in files where mtime >= dayStart {
+        let entries = piParseCache.entries(url, mtime: mtime) { text in
+            lines(text).compactMap { line -> PiEntry? in
+                guard let d = jsonObject(String(line)),
+                      d["type"] as? String == "message",
+                      let msg = d["message"] as? [String: Any],
+                      msg["role"] as? String == "assistant",
+                      let usage = msg["usage"] as? [String: Any],
+                      let ts = d["timestamp"] as? String,
+                      let date = parseISO(ts)
+                else { return nil }
+                return PiEntry(provider: providerID((msg["provider"] as? String) ?? "unknown"),
+                              model: (msg["model"] as? String) ?? "unknown",
+                              input: num(usage["input"]), output: num(usage["output"]),
+                              cacheRead: num(usage["cacheRead"]), cacheWrite: num(usage["cacheWrite"]),
+                              date: date)
+            }
+        }
+
+        for e in entries where e.date >= dayStart {
+            let key = modelKey(provider: e.provider, model: e.model)
             var a = s.perModel[key] ?? Agg()
-            let input = num(usage["input"])
-            let output = num(usage["output"])
-            let cacheRead = num(usage["cacheRead"])
-            let cacheWrite = num(usage["cacheWrite"])
-            a.input += input
-            a.output += output
-            a.cacheRead += cacheRead
-            a.cacheWrite5m += cacheWrite
-            let catalogCost = catalogPrice(PricedUsage(input: input, output: output, reasoning: 0,
-                                                        cacheRead: cacheRead, cacheWrite: cacheWrite),
-                                           provider: provider, model: model, catalog: catalog)
+            a.input += e.input
+            a.output += e.output
+            a.cacheRead += e.cacheRead
+            a.cacheWrite5m += e.cacheWrite
+            let catalogCost = catalogPrice(PricedUsage(input: e.input, output: e.output, reasoning: 0,
+                                                        cacheRead: e.cacheRead, cacheWrite: e.cacheWrite),
+                                           provider: e.provider, model: e.model, catalog: catalog)
             // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
             let cost = catalogCost ?? 0
             a.cost += cost
-            if let h = spec.index(date) {
+            if let h = spec.index(e.date) {
                 s.buckets[h] += cost
             }
             if catalogCost == nil { s.unknownPricing.insert(key) }

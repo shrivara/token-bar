@@ -243,9 +243,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         refresh()
         startWatching()
+        prewarmCaches()
         // Fallback: catches midnight rollover, missed events, and dirs created after launch
         timer = commonModesTimer(interval: 60, repeats: true) { [weak self] in
             self?.refresh()
+        }
+    }
+
+    // The current period loads first; then, in the background, scan the widest
+    // window (year) to populate the parse caches so the first switch to any
+    // period is instant instead of paying the full disk read + parse.
+    func prewarmCaches() {
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            let cal = Calendar.current, now = Date()
+            let start = Period.year.start(cal: cal, now: now)
+            let spec = Period.year.bucketSpec(start: start, cal: cal, now: now)
+            _ = self.scanAll(since: start, buckets: spec)
         }
     }
 
