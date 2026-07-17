@@ -5,6 +5,11 @@ import AppKit
 import CoreServices
 import TokenBarCore
 
+// Shown in the right-click menu for debugging which build is running. The .app
+// reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
+// so fall back to this constant (bump it alongside build.sh on release).
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.7.1"
+
 // MARK: - Period switching (D / W / M / Y)
 
 enum Period: Int, CaseIterable {
@@ -358,9 +363,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle("Show Provider Icons", showProviderIcons, #selector(toggleProviderIcons))
         toggle("Show Full Model Names", showFullModelNames, #selector(toggleFullModelNames))
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit token-bar", action: #selector(quitClicked), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
+        // Disabled footer showing the running version, for debugging.
+        let version = NSMenuItem(title: "v\(appVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
         return menu
     }
 
@@ -541,8 +547,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
-    // Menu skeleton (panel container) is created once; the panel's content is
-    // rebuilt in place so the menu can stay open. Quit lives in the View menu.
+    // Menu skeleton (panel container, separator, Quit) is created once; the
+    // panel's content is rebuilt in place so the menu can stay open.
     func ensureMenuSkeleton() {
         guard panelMenu.items.isEmpty else { return }
         panelMenu.autoenablesItems = false
@@ -557,6 +563,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panelItem = NSMenuItem()
         panelItem.view = panel
         panelMenu.addItem(panelItem)
+
+        panelMenu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
+        quit.target = self
+        panelMenu.addItem(quit)
     }
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {

@@ -4,7 +4,8 @@
     ```sh
     ./Scripts/update-model-pricing.sh  # review and commit the updated snapshot
     swift test
-    # bump CFBundleShortVersionString in build.sh
+    # bump the version in build.sh (CFBundleShortVersionString) and
+    # Sources/token-bar/main.swift (appVersion fallback, shown in the menu)
     git commit -am "Bump version to X.Y.Z"
     git push && git tag vX.Y.Z && git push origin vX.Y.Z
     ```
