@@ -170,11 +170,12 @@ private func price(_ usage: PricedUsage, model: PricingCatalog.Model) -> Double?
           usage.cacheWrite == 0 || (tier?.cacheWrite ?? model.cacheWrite) != nil
     else { return nil }
 
-    return (usage.input * input
-        + usage.output * output
-        + usage.reasoning * reasoning
-        + usage.cacheRead * (tier?.cacheRead ?? model.cacheRead ?? 0)
-        + usage.cacheWrite * (tier?.cacheWrite ?? model.cacheWrite ?? 0)) / 1_000_000
+    let inputCost = usage.input * input
+    let outputCost = usage.output * output
+    let reasoningCost = usage.reasoning * reasoning
+    let cacheReadCost = usage.cacheRead * (tier?.cacheRead ?? model.cacheRead ?? 0)
+    let cacheWriteCost = usage.cacheWrite * (tier?.cacheWrite ?? model.cacheWrite ?? 0)
+    return (inputCost + outputCost + reasoningCost + cacheReadCost + cacheWriteCost) / 1_000_000
 }
 
 private func providerID(_ raw: String) -> String {
