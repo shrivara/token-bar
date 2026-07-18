@@ -425,7 +425,7 @@ final class PiScannerTests: FixtureTestCase {
 
         let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
         XCTAssertEqual(s.agg.cost, 12, accuracy: 1e-9)
-        XCTAssertTrue(s.unknownPricing.isEmpty)
+        XCTAssertEqual(s.unknownPricing, ["anthropic-custom/plan/claude-test"])
     }
 }
 

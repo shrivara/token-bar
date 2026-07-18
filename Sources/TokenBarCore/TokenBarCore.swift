@@ -190,8 +190,14 @@ private func modelKey(provider: String, model: String) -> String {
     "\(provider)/\(model)"
 }
 
+private struct CatalogCost {
+    let value: Double
+    /// True when the provider name did not exactly match the catalog entry.
+    let approximate: Bool
+}
+
 private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
-                          catalog: PricingCatalog?) -> Double? {
+                          catalog: PricingCatalog?) -> CatalogCost? {
     guard let catalog else { return nil }
     let provider = providerID(provider)
 
@@ -205,9 +211,13 @@ private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
         base = String(base[..<separator])
         if !base.isEmpty { candidates.append(base) }
     }
-    guard let pricedModel = candidates.lazy.compactMap({ catalog.model(provider: $0, id: model) }).first
-    else { return nil }
-    return price(usage, model: pricedModel)
+    for (index, candidate) in candidates.enumerated() {
+        guard let pricedModel = catalog.model(provider: candidate, id: model),
+              let value = price(usage, model: pricedModel)
+        else { continue }
+        return CatalogCost(value: value, approximate: index > 0)
+    }
+    return nil
 }
 
 public func claudeRates(for model: String, catalog: PricingCatalog? = .bundled) -> Rates? {
@@ -431,10 +441,10 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         let catalogCost = catalogPrice(usage, provider: "anthropic", model: entry.model, catalog: catalog)
         // No pricing fallback: an uncatalogued model contributes $0 and is
         // flagged unknown (shown with a ~ marker) rather than guessed at.
-        let cost = catalogCost ?? 0
+        let cost = catalogCost?.value ?? 0
         a.cost += cost
         s.perModel[entry.model] = a
-        if catalogCost == nil {
+        if catalogCost == nil || catalogCost!.approximate {
             s.unknownPricing.insert(entry.model)
         }
         // Spend timeline: per-entry cost lands in the entry's bucket
@@ -514,12 +524,13 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
             a.input += e.input
             a.cacheRead += e.cacheRead
             a.output += e.outputTotal
-            let cost = catalogPrice(PricedUsage(input: e.input, output: output, reasoning: e.reasoning,
-                                                cacheRead: e.cacheRead, cacheWrite: 0),
-                                    provider: "openai", model: e.model, catalog: catalog) ?? 0
+            let catalogCost = catalogPrice(PricedUsage(input: e.input, output: output, reasoning: e.reasoning,
+                                                       cacheRead: e.cacheRead, cacheWrite: 0),
+                                           provider: "openai", model: e.model, catalog: catalog)
+            let cost = catalogCost?.value ?? 0
             a.cost += cost
             s.perModel[key] = a
-            if catalog?.model(provider: "openai", id: e.model) == nil { s.unknownPricing.insert(key) }
+            if catalogCost == nil || catalogCost!.approximate { s.unknownPricing.insert(key) }
             if let i = spec.index(e.date) { s.buckets[i] += cost }
         }
     }
@@ -582,10 +593,10 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
                                 cacheRead: cacheRead, cacheWrite: cacheWrite)
         let catalogCost = catalogPrice(usage, provider: provider, model: model, catalog: catalog)
         // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
-        let cost = catalogCost ?? 0
+        let cost = catalogCost?.value ?? 0
         a.cost += cost
         s.perModel[key] = a
-        if catalogCost == nil {
+        if catalogCost == nil || catalogCost!.approximate {
             s.unknownPricing.insert(key)
         }
         if let time = d["time"] as? [String: Any], num(time["created"]) > 0,
@@ -639,12 +650,12 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
                                                         cacheRead: e.cacheRead, cacheWrite: e.cacheWrite),
                                            provider: e.provider, model: e.model, catalog: catalog)
             // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
-            let cost = catalogCost ?? 0
+            let cost = catalogCost?.value ?? 0
             a.cost += cost
             if let h = spec.index(e.date) {
                 s.buckets[h] += cost
             }
-            if catalogCost == nil { s.unknownPricing.insert(key) }
+            if catalogCost == nil || catalogCost!.approximate { s.unknownPricing.insert(key) }
             s.perModel[key] = a
         }
     }
