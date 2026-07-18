@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.7.2"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.7.3"
 
 // MARK: - Period switching (D / W / M / Y)
 

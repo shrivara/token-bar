@@ -413,6 +413,20 @@ final class PiScannerTests: FixtureTestCase {
         XCTAssertEqual(s.agg.cost, 14.7, accuracy: 1e-9)
         XCTAssertTrue(s.unknownPricing.isEmpty)
     }
+
+    func testQualifiedProviderFallsBackToBaseProviderPrices() throws {
+        let json = """
+        {"providers":{"anthropic":{"models":{"claude-test":{"input":2,"output":10}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        let line = entry(ts: inRange, model: "claude-test", input: 1_000_000, output: 1_000_000)
+            .replacingOccurrences(of: "\"provider\":\"anthropic\"", with: "\"provider\":\"anthropic-custom/plan\"")
+        try write([line], to: "--proj--/s1.jsonl")
+
+        let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 12, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
 }
 
 // MARK: - Hourly spend buckets

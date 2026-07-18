@@ -52,7 +52,7 @@ Prints today's per-model breakdown and totals to stdout, then exits.
 ## Notes
 
 - Spend is API-equivalent pricing. If you're on a subscription plan (e.g. Claude Max), the dollar figure shows what the usage *would* cost via the API, not what you're billed.
-- API-equivalent pricing comes from an offline snapshot of [models.dev](https://models.dev/), bundled with the app under its MIT license. Prices are looked up by provider and model for every message, including cache and reasoning tokens. A model that isn't in the catalog (or lacks a complete price) contributes $0 and is marked `~` in the panel — the tool's own recorded cost is not trusted, and there is no rate guessing.
+- API-equivalent pricing comes from an offline snapshot of [models.dev](https://models.dev/), bundled with the app under its MIT license. Prices are looked up by provider and model for every message, including cache and reasoning tokens. Qualified provider variants fall back to their base provider: for example, `openai-codex` falls back to the matching `openai` model price. A model that isn't in the catalog (or lacks a complete price) contributes $0 and is marked `~` in the panel — the tool's own recorded cost is not trusted, and there is no rate guessing.
 - Everything is read locally at runtime. No network access, no telemetry.
 
 ## Updating prices

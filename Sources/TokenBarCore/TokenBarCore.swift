@@ -192,8 +192,22 @@ private func modelKey(provider: String, model: String) -> String {
 
 private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
                           catalog: PricingCatalog?) -> Double? {
-    guard let model = catalog?.model(provider: providerID(provider), id: model) else { return nil }
-    return price(usage, model: model)
+    guard let catalog else { return nil }
+    let provider = providerID(provider)
+
+    // Preserve an exact match when one is available. Provider integrations
+    // commonly qualify a catalog provider (for example, `openai-codex`), so
+    // then progressively remove trailing `-`, `_`, or `/` components and use
+    // the first catalog provider that has this model.
+    var candidates = [provider]
+    var base = provider
+    while let separator = base.lastIndex(where: { "-_/".contains($0) }) {
+        base = String(base[..<separator])
+        if !base.isEmpty { candidates.append(base) }
+    }
+    guard let pricedModel = candidates.lazy.compactMap({ catalog.model(provider: $0, id: model) }).first
+    else { return nil }
+    return price(usage, model: pricedModel)
 }
 
 public func claudeRates(for model: String, catalog: PricingCatalog? = .bundled) -> Rates? {
