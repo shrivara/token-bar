@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.7.4"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.7.5"
 
 // MARK: - Period switching (D / W / M / Y)
 
@@ -151,12 +151,28 @@ final class ProviderBadgeView: NSView {
     let image: NSImage?
 
     init(provider: String) {
+        let glyphProvider = Self.glyphProvider(for: provider)
         let knownMonograms = ["openrouter": "OR"]
-        monogram = knownMonograms[provider.lowercased()]
-            ?? String(provider.uppercased().filter(\.isLetter).prefix(2))
-        image = Bundle.module.url(forResource: provider.lowercased(), withExtension: "svg")
+        monogram = knownMonograms[glyphProvider]
+            ?? String(glyphProvider.uppercased().filter(\.isLetter).prefix(2))
+        image = Bundle.module.url(forResource: glyphProvider, withExtension: "svg")
             .flatMap(NSImage.init(contentsOf:))
         super.init(frame: .zero)
+    }
+
+    // Providers may be qualified by an integration (for example,
+    // `openai-codex` or `anthropic-custom/plan`). Prefer a matching glyph,
+    // then remove qualifiers until reaching the bundled provider glyph.
+    private static func glyphProvider(for provider: String) -> String {
+        var candidate = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while !candidate.isEmpty {
+            if Bundle.module.url(forResource: candidate, withExtension: "svg") != nil {
+                return candidate
+            }
+            guard let separator = candidate.lastIndex(where: { "-_/".contains($0) }) else { break }
+            candidate = String(candidate[..<separator])
+        }
+        return provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     required init?(coder: NSCoder) { nil }
