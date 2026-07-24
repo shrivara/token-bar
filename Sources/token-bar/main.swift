@@ -649,6 +649,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.addArrangedSubview(label("Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
 
+        if active.isEmpty {
+            panel.setCustomSpacing(12, after: panel.arrangedSubviews.last!)
+            panel.addArrangedSubview(label(nil, "No usage yet for this period", size: 13,
+                                          weight: .medium))
+            panel.setCustomSpacing(2, after: panel.arrangedSubviews.last!)
+            panel.addArrangedSubview(label(nil,
+                                           "Token Bar will populate as you use Claude Code, Codex, OpenCode, or Pi.",
+                                           size: 12, color: .secondaryLabelColor))
+            resizePanel()
+            return
+        }
+
         // Spend timeline for the period
         sparkView = nil
         if showGraph {
