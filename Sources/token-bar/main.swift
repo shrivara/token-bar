@@ -649,6 +649,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.addArrangedSubview(label("Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
 
+        sparkView = nil
         if active.isEmpty {
             panel.setCustomSpacing(12, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(label(nil, "No usage yet for this period", size: 13,
@@ -662,7 +663,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Spend timeline for the period
-        sparkView = nil
         if showGraph {
             let cal = Calendar.current
             let spark = SparkBarView()
