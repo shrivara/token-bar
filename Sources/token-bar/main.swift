@@ -210,6 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menuSignature = ""
     var sparkView: SparkBarView?
     var panelView: NSStackView?
+    var periodField: NSTextField?
+    var periodButtons: [NSButton] = []
     var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
 
     // Left-click shows this info panel; right-click shows the View menu below.
@@ -509,13 +511,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return out
     }
 
-    // Rebuild the panel only when its row structure changes (period switch,
-    // new model/source); otherwise update text fields in place: no flicker.
+    // Rebuild the panel only when its row structure changes (a new model or
+    // source); otherwise update fields and period controls in place: no flicker.
     func rebuildMenu(total: Agg, sources: [SourceStats]) {
         ensureMenuSkeleton()
         let active = activeSources(sources)
-        let signature = "\(period.rawValue)|" + active
+        // Structure, not live ordering or period, determines whether the panel
+        // needs rebuilding. Recreating every view on a period switch caused a
+        // visible flash and let the menu recalculate its position.
+        let signature = active
             .map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
+            .sorted()
             .joined(separator: "|")
         if signature == menuSignature && !statFields.isEmpty {
             updateFields(total: total, active: active)
@@ -531,26 +537,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Panel width is sticky: it grows to fit the widest content seen but never
-    // shrinks back, so switching periods doesn't make the menu edges jump.
-    var stickyWidth: CGFloat = 250
+    // shrinks back, so changing values cannot move the menu's anchored edge.
+    // The insets are already included in NSStackView.fittingSize; adding them on
+    // every refresh made the panel grow a little each time.
+    var stickyWidth: CGFloat = 360
 
     func resizePanel() {
         guard let panel = panelView else { return }
         panel.layoutSubtreeIfNeeded()
-        var size = panel.fittingSize
-        // fittingSize can under-measure a detached stack view; pad so the
-        // trailing column and descenders never clip
-        stickyWidth = max(stickyWidth, size.width + 16)
-        size.width = stickyWidth
-        size.height += 4
+        let fitting = panel.fittingSize
+        // NSStackView's fitting width only accounts for its leading inset in
+        // this menu-hosted configuration. Measure the content explicitly so
+        // the table gets the same trailing inset as the header and graph.
+        let contentWidth = panel.arrangedSubviews.map { $0.fittingSize.width }.max() ?? 0
+        let insetWidth = panel.edgeInsets.left + panel.edgeInsets.right
+        stickyWidth = max(stickyWidth, ceil(contentWidth + insetWidth))
+        let size = NSSize(width: stickyWidth, height: ceil(fitting.height))
         if size != panel.frame.size { panel.setFrameSize(size) }
+    }
+
+    func updatePeriodControls() {
+        periodField?.stringValue = period.title
+        for button in periodButtons {
+            guard let buttonPeriod = Period(rawValue: button.tag) else { continue }
+            button.attributedTitle = NSAttributedString(
+                string: buttonPeriod.letter,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11,
+                                             weight: buttonPeriod == period ? .semibold : .regular),
+                    .foregroundColor: buttonPeriod == period
+                        ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
+                ])
+        }
     }
 
     func updateFields(total: Agg, active: [SourceStats]) {
         setField("Spend", fmtMoney(total.cost))
         setField("Tokens", tokensLine(total))
+        updatePeriodControls()
         for s in active { setField("\(s.name)/Header", headerTitle(for: s)) }
         sparkView?.values = totalBuckets(active)
+        sparkView?.caption = period.caption
+        sparkView?.axis = period.axis(cal: Calendar.current, now: Date())
         for s in active {
             for (model, a) in s.perModel {
                 let marker = s.unknownPricing.contains(model) ? "~" : ""
@@ -572,7 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSStackView()
         panel.orientation = .vertical
         panel.alignment = .leading
-        panel.spacing = 4
+        panel.spacing = 0
         panel.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
         panelView = panel
 
@@ -593,6 +621,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.removeFromSuperview()
         }
         statFields.removeAll()
+        periodField = nil
+        periodButtons.removeAll()
 
         func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
                    color: NSColor = .labelColor, mono: Bool = false, align: NSTextAlignment = .left) -> NSTextField {
@@ -618,6 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
         let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
+        periodField = periodLabel
 
         let switcher = NSStackView()
         switcher.orientation = .horizontal
@@ -633,6 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .foregroundColor: p == period ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
                 ])
             switcher.addArrangedSubview(b)
+            periodButtons.append(b)
         }
 
         let flexSpacer = NSView()
@@ -645,19 +677,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Stretch the header across the panel so the switcher sits at the right edge
         headerRow.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
         headerRow.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
+        panel.setCustomSpacing(2, after: headerRow)
 
         panel.addArrangedSubview(label("Tokens", tokensLine(total), size: 12,
                                        color: .secondaryLabelColor, mono: true))
 
         sparkView = nil
         if active.isEmpty {
-            panel.setCustomSpacing(12, after: panel.arrangedSubviews.last!)
+            panel.setCustomSpacing(16, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(label(nil, "No usage yet for this period", size: 13,
                                           weight: .medium))
-            panel.setCustomSpacing(2, after: panel.arrangedSubviews.last!)
-            panel.addArrangedSubview(label(nil,
-                                           "Token Bar will populate as you use Claude Code, Codex, OpenCode, or Pi.",
-                                           size: 12, color: .secondaryLabelColor))
+            panel.setCustomSpacing(3, after: panel.arrangedSubviews.last!)
+            let emptyMessage = label(nil,
+                                     "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi.",
+                                     size: 12, color: .secondaryLabelColor)
+            emptyMessage.maximumNumberOfLines = 2
+            emptyMessage.lineBreakMode = .byWordWrapping
+            panel.addArrangedSubview(emptyMessage)
+            emptyMessage.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+            emptyMessage.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
             resizePanel()
             return
         }
@@ -670,8 +708,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             spark.caption = period.caption
             spark.axis = period.axis(cal: cal, now: Date())
             sparkView = spark
-            panel.setCustomSpacing(8, after: panel.arrangedSubviews.last!)
+            panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(spark)
+            spark.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            spark.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+            spark.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
         }
 
         // Per-source model table. One shared grid keeps the numeric columns
@@ -705,17 +746,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             let grid = NSGridView(views: rows)
-            grid.rowSpacing = 3
-            grid.columnSpacing = 14
+            grid.rowSpacing = 4
+            grid.columnSpacing = 12
             for col in 1..<5 { grid.column(at: col).xPlacement = .trailing }
             // A header binds to the rows below it: generous space above,
             // a small fixed gap below, uniform row spacing within a section.
             for i in headerRowIndices {
-                grid.row(at: i).topPadding = i == 0 ? 0 : 10
-                grid.row(at: i).bottomPadding = 1
+                grid.row(at: i).topPadding = i == 0 ? 0 : 12
+                grid.row(at: i).bottomPadding = 2
             }
-            panel.setCustomSpacing(12, after: panel.arrangedSubviews.last!)
+            panel.setCustomSpacing(showGraph ? 16 : 14, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(grid)
+            grid.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            grid.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+            grid.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
         }
 
         resizePanel()
