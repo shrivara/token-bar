@@ -213,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var panelView: NSStackView?
     var periodField: NSTextField?
     var periodButtons: [NSButton] = []
+    var screenshotButton: NSButton?
     var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
 
     // Left-click shows this info panel; right-click shows the View menu below.
@@ -405,6 +406,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
     @objc func toggleProviderIcons() { showProviderIcons.toggle(); applyViewChange("showProviderIcons", showProviderIcons) }
     @objc func toggleFullModelNames() { showFullModelNames.toggle(); applyViewChange("showFullModelNames", showFullModelNames) }
+
+    // Render only the stats card—not the desktop, menu bar, or Quit item—onto
+    // an opaque background and place a Retina PNG on the clipboard.
+    func panelSnapshot() -> NSBitmapImageRep? {
+        guard let panel = panelView else { return nil }
+        resizePanel()
+        panel.layoutSubtreeIfNeeded()
+        let size = panel.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+
+        let scale = max(2, panel.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(ceil(size.width * scale)),
+            pixelsHigh: Int(ceil(size.height * scale)),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = size
+
+        guard let context = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        // Keep the capture action available in the live panel without baking
+        // that control into the exported image. Alpha preserves its layout.
+        let screenshotButtonAlpha = screenshotButton?.alphaValue
+        screenshotButton?.alphaValue = 0
+        defer {
+            if let alpha = screenshotButtonAlpha { screenshotButton?.alphaValue = alpha }
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        panel.effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            NSBezierPath(roundedRect: panel.bounds, xRadius: 12, yRadius: 12).fill()
+            panel.displayIgnoringOpacity(panel.bounds, in: context)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    @objc func copyPanelScreenshot() {
+        guard let rep = panelSnapshot(),
+              let png = rep.representation(using: .png, properties: [:])
+        else { NSSound.beep(); return }
+        // Put both representations on the clipboard: image data pastes into
+        // editors and chats, while the file URL lets Finder paste an actual
+        // .png file. The temporary source remains available until macOS cleans
+        // its temp directory.
+        let snapshotsDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Token Bar Screenshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: snapshotsDirectory,
+                                                 withIntermediateDirectories: true)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let filename = "Token Bar \(formatter.string(from: Date())).png"
+        let fileURL = snapshotsDirectory.appendingPathComponent(filename)
+        let wroteFile = (try? png.write(to: fileURL, options: .atomic)) != nil
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if wroteFile { pasteboard.writeObjects([fileURL as NSURL]) }
+        pasteboard.setData(png, forType: .png)
+
+        // Brief in-place confirmation; the panel can remain open.
+        if let button = screenshotButton {
+            button.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")
+            _ = commonModesTimer(interval: 1, repeats: false) { [weak button] in
+                button?.image = NSImage(systemSymbolName: "camera",
+                                        accessibilityDescription: "Copy Panel Screenshot")
+            }
+        }
+    }
 
     @objc func quitClicked() { NSApp.terminate(nil) }
 
@@ -637,6 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statFields.removeAll()
         periodField = nil
         periodButtons.removeAll()
+        screenshotButton = nil
         minimumContentWidth = 0
 
         func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
@@ -689,9 +768,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             periodButtons.append(b)
         }
 
+        let capture = NSButton(image: NSImage(systemSymbolName: "camera",
+                                               accessibilityDescription: "Copy Panel Screenshot")!,
+                               target: self, action: #selector(copyPanelScreenshot))
+        capture.isBordered = false
+        capture.controlSize = .small
+        capture.contentTintColor = .tertiaryLabelColor
+        capture.toolTip = "Copy Panel Screenshot"
+        capture.setAccessibilityLabel("Copy Panel Screenshot")
+        screenshotButton = capture
+
         let flexSpacer = NSView()
         flexSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let headerRow = NSStackView(views: [spend, periodLabel, flexSpacer, switcher])
+        // Keep the period switcher against the trailing edge; the capture
+        // action lives with the title controls on the left.
+        let headerRow = NSStackView(views: [spend, periodLabel, capture, flexSpacer, switcher])
         headerRow.orientation = .horizontal
         headerRow.alignment = .lastBaseline
         headerRow.spacing = 6
