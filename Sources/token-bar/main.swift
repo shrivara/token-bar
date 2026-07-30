@@ -208,6 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
     var menuSignature = ""
+    var latestPanelData: (period: Period, total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
     var panelView: NSStackView?
     var periodField: NSTextField?
@@ -388,12 +389,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    // View toggles change the panel's row structure, so force a full rebuild
-    // (the signature check would otherwise only refresh text in place).
+    // View toggles only change presentation, so rebuild synchronously from the
+    // latest scan. Waiting for another disk scan allowed the old panel to open
+    // first and then visibly resize when that scan completed.
     func applyViewChange(_ key: String, _ value: Bool) {
         UserDefaults.standard.set(value, forKey: key)
         menuSignature = ""
-        refresh()
+        if let data = latestPanelData, data.period == period {
+            rebuildMenu(total: data.total, sources: data.sources)
+        } else {
+            refresh()
+        }
     }
 
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
@@ -435,10 +441,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var total = Agg()
             for s in sources { total.add(s.agg) }
             self.performOnMain {
-                // Bar and panel both show the selected period
-                self.animateBar(to: BarValues(cost: total.cost, input: total.input,
-                                              output: total.output, hit: total.hitRate))
-                self.rebuildMenu(total: total, sources: sources)
+                // A period can change while its previous scan is in flight.
+                // Never render stale rows under the newly selected period.
+                if period == self.period {
+                    self.latestPanelData = (period, total, sources)
+                    self.animateBar(to: BarValues(cost: total.cost, input: total.input,
+                                                  output: total.output, hit: total.hitRate))
+                    self.rebuildMenu(total: total, sources: sources)
+                }
                 self.scanning = false
                 if self.scanPending {
                     self.scanPending = false
@@ -541,6 +551,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The insets are already included in NSStackView.fittingSize; adding them on
     // every refresh made the panel grow a little each time.
     var stickyWidth: CGFloat = 360
+    // Width needed by the current table with full names and icons enabled.
+    // Reserving this up front keeps view toggles from resizing the menu.
+    var minimumContentWidth: CGFloat = 0
 
     func resizePanel() {
         guard let panel = panelView else { return }
@@ -549,7 +562,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // NSStackView's fitting width only accounts for its leading inset in
         // this menu-hosted configuration. Measure the content explicitly so
         // the table gets the same trailing inset as the header and graph.
-        let contentWidth = panel.arrangedSubviews.map { $0.fittingSize.width }.max() ?? 0
+        let measuredWidth = panel.arrangedSubviews.map { $0.fittingSize.width }.max() ?? 0
+        let contentWidth = max(measuredWidth, minimumContentWidth)
         let insetWidth = panel.edgeInsets.left + panel.edgeInsets.right
         stickyWidth = max(stickyWidth, ceil(contentWidth + insetWidth))
         let size = NSSize(width: stickyWidth, height: ceil(fitting.height))
@@ -623,6 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statFields.removeAll()
         periodField = nil
         periodButtons.removeAll()
+        minimumContentWidth = 0
 
         func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
                    color: NSColor = .labelColor, mono: Bool = false, align: NSTextAlignment = .left) -> NSTextField {
@@ -631,12 +646,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                           : .systemFont(ofSize: size, weight: weight)
             f.textColor = color
             f.alignment = align
+            if align == .right {
+                // Keep metric columns compact. Any width reserved for full
+                // model names belongs to the first column, not a numeric cell.
+                f.setContentHuggingPriority(.required, for: .horizontal)
+                f.setContentCompressionResistancePriority(.required, for: .horizontal)
+            }
             if let key = key { statFields[key] = f }
             return f
         }
 
         func modelLabel(provider: String, name: String) -> NSView {
             let nameLabel = label(nil, name, size: 12)
+            nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
             guard showProviderIcons else { return nameLabel }
             let row = NSStackView(views: [ProviderBadgeView(provider: provider), nameLabel])
             row.orientation = .horizontal
@@ -755,6 +777,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 grid.row(at: i).topPadding = i == 0 ? 0 : 12
                 grid.row(at: i).bottomPadding = 2
             }
+
+            // Size from the unconstrained grid, then reserve the difference
+            // between the displayed first column and its widest possible state.
+            // Otherwise Auto Layout discovers the full-name width over several
+            // passes and the menu visibly jumps before settling.
+            let headerWidth = headerRowIndices.map {
+                rows[$0][0].fittingSize.width
+            }.max() ?? 0
+            let models = active.flatMap { $0.perModel.keys }
+            func fullModelLabelWidth(_ name: String) -> CGFloat {
+                let nameLabel = label(nil, name, size: 12)
+                let row = NSStackView(views: [ProviderBadgeView(provider: ""), nameLabel])
+                row.orientation = .horizontal
+                row.alignment = .centerY
+                row.spacing = 5
+                return row.fittingSize.width
+            }
+            let fullModelWidth = models.map(fullModelLabelWidth).max() ?? 0
+            let stableFirstColumn = ceil(max(headerWidth, fullModelWidth))
+            for row in rows {
+                row[0].widthAnchor.constraint(equalToConstant: stableFirstColumn).isActive = true
+            }
+            // Giving the first column its final width before measuring leaves
+            // no surplus for NSGridView to assign to a metric column.
+            minimumContentWidth = ceil(grid.fittingSize.width)
+
             panel.setCustomSpacing(showGraph ? 16 : 14, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(grid)
             grid.setContentHuggingPriority(.defaultLow, for: .horizontal)
