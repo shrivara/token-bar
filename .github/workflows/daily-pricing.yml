@@ -17,6 +17,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
     steps:
@@ -46,6 +47,7 @@ jobs:
     needs: check
     if: needs.check.outputs.changed == 'true'
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:

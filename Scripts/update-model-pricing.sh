@@ -8,7 +8,7 @@ mkdir -p Sources/TokenBarCore/Resources
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 
-curl --fail --location --silent --show-error https://models.dev/api.json |
+curl --fail --location --silent --show-error --retry 3 https://models.dev/api.json |
     jq -S '{
         source: "https://models.dev/api.json",
         license: "MIT (c) models.dev",
