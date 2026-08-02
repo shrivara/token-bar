@@ -57,7 +57,9 @@ Prints today's per-model breakdown and totals to stdout, then exits.
 
 ## Updating prices
 
-Run `./Scripts/update-model-pricing.sh` to fetch the current models.dev catalog and regenerate the checked-in pricing snapshot. Review and commit the resulting JSON with the release; normal builds do not fetch the network.
+The **Daily pricing release** GitHub Actions workflow checks models.dev once a day. If the normalized catalog changed, it bumps the patch version, runs the tests, builds the app, and commits and tags the new version. If nothing changed, it exits without creating a release.
+
+To update manually, run `./Scripts/update-model-pricing.sh` to regenerate the checked-in snapshot and `./Scripts/bump-patch-version.sh` to bump the app version. Normal builds do not fetch the network.
 
 ## License
 

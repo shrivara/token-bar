@@ -1,12 +1,13 @@
 # Releasing token-bar
 
-1. **Test and tag** (in this repo):
+The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump and `vX.Y.Z` tag. An unchanged catalog does nothing. The Homebrew formula and bottles still follow steps 2 and 3 below.
+
+1. **Test and tag manually** (for a feature release or workflow recovery):
     ```sh
-    ./Scripts/update-model-pricing.sh  # review and commit the updated snapshot
-    swift test
-    # bump the version in build.sh (CFBundleShortVersionString) and
-    # Sources/token-bar/main.swift (appVersion fallback, shown in the menu)
-    git commit -am "Bump version to X.Y.Z"
+    ./Scripts/update-model-pricing.sh  # review the updated snapshot
+    ./Scripts/bump-patch-version.sh    # or set the desired version in both files
+    swift test && ./build.sh
+    git commit -am "Release vX.Y.Z"
     git push && git tag vX.Y.Z && git push origin vX.Y.Z
     ```
 
