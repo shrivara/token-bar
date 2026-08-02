@@ -57,7 +57,7 @@ Prints today's per-model breakdown and totals to stdout, then exits.
 
 ## Updating prices
 
-The **Daily pricing release** GitHub Actions workflow checks models.dev once a day. If the normalized catalog changed, it bumps the patch version, runs the tests, builds the app, and commits and tags the new version. If nothing changed, it exits without creating a release.
+The **Daily pricing release** GitHub Actions workflow checks models.dev once a day. If the normalized catalog changed, it bumps the patch version, runs the tests, builds the app, and commits and tags the new version. The Homebrew tap then updates its formula and builds bottles automatically. If nothing changed, no release is created.
 
 To update manually, run `./Scripts/update-model-pricing.sh` to regenerate the checked-in snapshot and `./Scripts/bump-patch-version.sh` to bump the app version. Normal builds do not fetch the network.
 
