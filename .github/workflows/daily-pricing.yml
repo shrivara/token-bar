@@ -77,3 +77,15 @@ jobs:
           git tag "v${VERSION}"
           git push --atomic origin HEAD:main "v${VERSION}"
           echo "### Released v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Trigger Homebrew tap sync
+        env:
+          GH_TOKEN: ${{ secrets.TAP_WORKFLOW_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::warning::TAP_WORKFLOW_TOKEN is not configured; the tap's scheduled sync will pick up this release."
+            exit 0
+          fi
+          gh workflow run sync-token-bar.yml \
+            --repo shrivara/homebrew-tap \
+            --ref main
+          echo "Triggered the Homebrew tap sync." >> "$GITHUB_STEP_SUMMARY"

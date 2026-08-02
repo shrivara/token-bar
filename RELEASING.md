@@ -1,6 +1,14 @@
 # Releasing token-bar
 
-The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump and `vX.Y.Z` tag. An unchanged catalog does nothing. The tap's `Sync token-bar` workflow detects new tags, updates the formula, and starts the bottle build automatically.
+The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump and `vX.Y.Z` tag. An unchanged catalog does nothing. The workflow immediately starts the tap's `Sync token-bar` workflow, which updates the formula and builds bottles. The tap also checks daily as a fallback.
+
+## One-time tap trigger setup
+
+Create a fine-grained personal access token scoped only to `shrivara/homebrew-tap`, with **Actions: read and write**, then add it to this repository as the `TAP_WORKFLOW_TOKEN` Actions secret:
+
+```sh
+gh secret set TAP_WORKFLOW_TOKEN --repo shrivara/token-bar
+```
 
 The steps below are for feature releases or workflow recovery.
 
