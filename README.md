@@ -28,6 +28,14 @@ brew install shrivara/tap/token-bar
 brew services start token-bar   # start now + at login
 ```
 
+Upgrading from v0.8.7 or earlier? Regenerate the service once so **Quit** does
+not relaunch the app:
+
+```sh
+brew update && brew upgrade token-bar
+brew services restart token-bar
+```
+
 ### From source
 
 Requires macOS 14+ and the Xcode Command Line Tools.
