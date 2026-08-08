@@ -13453,9 +13453,9 @@
           "output": 0.34
         },
         "google/gemma-4-31b-it": {
-          "cache_read": 0.05,
-          "input": 0.09,
-          "output": 0.34
+          "cache_read": 0.01,
+          "input": 0.08,
+          "output": 0.35
         },
         "google/lyria-3-clip-preview": {
           "input": 0,
@@ -26396,9 +26396,9 @@
           "output": 2.992
         },
         "z-ai/glm-5.2": {
-          "cache_read": 0.08294,
-          "input": 0.4466,
-          "output": 1.4036
+          "cache_read": 0.06162,
+          "input": 0.3318,
+          "output": 1.0428
         },
         "z-ai/glm-5v-turbo": {
           "cache_read": 0.24,
@@ -28553,6 +28553,34 @@
     },
     "regolo-ai": {
       "models": {
+        "apertus-70b": {
+          "input": 0.46,
+          "output": 2.42
+        },
+        "brick-complexity-pro": {
+          "input": 0.12,
+          "output": 0.46
+        },
+        "brick-v1-beta": {
+          "input": 0,
+          "output": 0
+        },
+        "deepseek-ocr-2": {
+          "input": 0,
+          "output": 0
+        },
+        "faster-whisper-large-v3": {
+          "input": 0,
+          "output": 0
+        },
+        "gemma4-31b": {
+          "input": 0.46,
+          "output": 2.42
+        },
+        "glm5.2": {
+          "input": 2.31,
+          "output": 6
+        },
         "gpt-oss-120b": {
           "input": 1,
           "output": 4.2
@@ -28561,25 +28589,13 @@
           "input": 0.4,
           "output": 1.8
         },
-        "llama-3.1-8b-instruct": {
-          "input": 0.05,
-          "output": 0.25
-        },
         "llama-3.3-70b-instruct": {
           "input": 0.6,
           "output": 2.7
         },
-        "minimax-m2.5": {
-          "input": 0.8,
-          "output": 3.5
-        },
         "mistral-small-4-119b": {
           "input": 0.75,
           "output": 3
-        },
-        "mistral-small3.2": {
-          "input": 0.5,
-          "output": 2.2
         },
         "qwen-image": {
           "input": 0.5,
@@ -28604,6 +28620,10 @@
         "qwen3.5-9b": {
           "input": 0.15,
           "output": 0.6
+        },
+        "qwen3.6-27b": {
+          "input": 0.58,
+          "output": 2.42
         }
       }
     },
@@ -29100,6 +29120,14 @@
               }
             }
           ]
+        }
+      }
+    },
+    "salad-cloud": {
+      "models": {
+        "qwen3.6-35b-a3b": {
+          "input": 0.09,
+          "output": 0.6
         }
       }
     },
