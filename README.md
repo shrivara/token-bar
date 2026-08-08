@@ -6,7 +6,7 @@ A minimal macOS menu bar app showing today's AI usage: spend, tokens in/out, and
   <img src="docs/screenshot.png" width="425" alt="Token Bar panel showing yearly spend, token usage, cache hit rate, a spend graph, and per-model breakdowns">
 </p>
 
-The numbers roll odometer-style whenever new usage lands. Left-click the menu bar item for a panel with the period's totals, a spend graph, and a per-tool, per-model breakdown; the **D / W / M / Y** buttons switch between day, week, month, and year. The camera button copies a clean Retina PNG to the clipboard as both an image and a pasteable file. Right-click (or Control-click) for view options — toggle the spend graph, provider icons, and full vs. short model names — and to quit.
+The numbers roll odometer-style whenever new usage lands. Left-click the menu bar item for a panel with the period's totals, a spend graph, and a per-tool, per-model breakdown; the **D / W / M / Y** buttons switch between day, week, month, and year. The camera button copies a clean Retina PNG to the clipboard as both an image and a pasteable file. Right-click (or Control-click) for view options — toggle the spend graph, provider icons, and full vs. short model names. Quit is at the bottom of the left-click panel.
 
 ## Supported tools
 
@@ -19,7 +19,7 @@ The numbers roll odometer-style whenever new usage lands. Left-click the menu ba
 
 Updates are instant: file-system events fire the moment a session writes new usage (coalesced to at most about one refresh per second while streaming), with a 60s timer as backstop and for the midnight rollover. Tools with no activity today are hidden from the panel.
 
-## For users
+## Homebrew
 
 ### Install
 
