@@ -58,13 +58,29 @@ private func render(pixels: Int) throws -> Data {
                                options: [])
     context.restoreGState()
 
-    let text = "tb" as NSString
-    let attributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 116, weight: .semibold),
-        .foregroundColor: NSColor(cgColor: color(0x5D3B0B, alpha: 0.82))!,
-        .kern: -5,
-    ]
-    text.draw(at: CGPoint(x: 172, y: 154), withAttributes: attributes)
+    // Fixed vector letterforms keep the icon byte-reproducible across macOS
+    // versions (system-font rasterization differs between releases).
+    context.setFillColor(color(0x8A5B08))
+
+    let tStem = CGPath(roundedRect: CGRect(x: 184, y: 158, width: 34, height: 116),
+                       cornerWidth: 14, cornerHeight: 14, transform: nil)
+    let tCrossbar = CGPath(roundedRect: CGRect(x: 166, y: 226, width: 76, height: 28),
+                           cornerWidth: 9, cornerHeight: 9, transform: nil)
+    context.addPath(tStem)
+    context.fillPath()
+    context.addPath(tCrossbar)
+    context.fillPath()
+
+    let bStem = CGPath(roundedRect: CGRect(x: 224, y: 158, width: 31, height: 122),
+                       cornerWidth: 14, cornerHeight: 14, transform: nil)
+    context.addPath(bStem)
+    context.fillPath()
+
+    let bBowl = CGMutablePath()
+    bBowl.addEllipse(in: CGRect(x: 232, y: 158, width: 78, height: 78))
+    bBowl.addEllipse(in: CGRect(x: 254, y: 178, width: 34, height: 38))
+    context.addPath(bBowl)
+    context.drawPath(using: .eoFill)
 
     NSGraphicsContext.restoreGraphicsState()
     guard let png = rep.representation(using: .png, properties: [:])
