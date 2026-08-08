@@ -90,9 +90,47 @@ enum Period: Int, CaseIterable {
 // MARK: - Sparkline
 
 // Spend bars over the selected period, sparkline-sized, with axis + caption
+private final class LaserOverlayView: NSView {
+    var origins: [NSPoint] = []
+    var endpoints: [NSPoint] = []
+    var colors: [NSColor] = []
+    var laserVisible = false
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard laserVisible, origins.count == endpoints.count else { return }
+        for index in origins.indices {
+            let beam = NSBezierPath()
+            beam.move(to: origins[index])
+            beam.line(to: endpoints[index])
+            beam.lineCapStyle = .round
+            (index < colors.count ? colors[index] : .systemRed)
+                .withAlphaComponent(0.78).setStroke()
+            beam.lineWidth = 1.5
+            beam.stroke()
+            NSColor.white.withAlphaComponent(0.92).setStroke()
+            beam.lineWidth = 0.4
+            beam.stroke()
+        }
+    }
+}
+
+fileprivate struct CatMotionState {
+    let position: CGFloat
+    let direction: CGFloat
+    let nextActivityIn: TimeInterval
+}
+
 final class SparkBarView: NSView {
     var values: [Double] = [] {
-        didSet { if values != oldValue { needsDisplay = true } }
+        didSet {
+            guard values != oldValue else { return }
+            if values.count != oldValue.count, pendingCatAction != nil {
+                pendingCatAction = nil
+                pendingCatStop = nil
+                nextCatActivityIn = min(max(nextCatActivityIn, 1), 10)
+            }
+            needsDisplay = true
+        }
     }
     var caption = "spend per hour" {
         didSet { if caption != oldValue { needsDisplay = true } }
@@ -100,11 +138,173 @@ final class SparkBarView: NSView {
     var axis: [(CGFloat, String)] = [] {
         didSet { if axis.map(\.1) != oldValue.map(\.1) { needsDisplay = true } }
     }
+    var catEnabled = false {
+        didSet {
+            guard catEnabled != oldValue else { return }
+            invalidateIntrinsicContentSize()
+            updateCatTimer()
+            needsDisplay = true
+        }
+    }
+    var catAnimating = false {
+        didSet { if catAnimating != oldValue { updateCatTimer() } }
+    }
 
+    private enum CatAction: Equatable {
+        case walk, lick, blink, zoom, pant, sit, stretch
+    }
+
+    private var catTimer: Timer?
+    private var laserWindow: NSWindow?
+    private var laserOverlay: LaserOverlayView?
+    private var catPosition: CGFloat = 0
+    private var catDirection: CGFloat = 1
+    private var catAction: CatAction = .walk
+    private var catLastUpdate = ProcessInfo.processInfo.systemUptime
+    private var catActionStartedAt = 0.0
+    private var catActionEndsAt = 0.0
+    private var pendingCatAction: (action: CatAction, duration: TimeInterval)?
+    private var pendingCatStop: CGFloat?
+    private var nextCatActivityIn = 0.0
     let axisHeight: CGFloat = 11
     let captionHeight: CGFloat = 12
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 222, height: 16 + axisHeight + captionHeight) }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: 222, height: (catEnabled ? 27 : 16) + axisHeight + captionHeight)
+    }
+
+    deinit {
+        catTimer?.invalidate()
+        laserWindow?.orderOut(nil)
+    }
+
+    // Match the display refresh cadence for smooth tiny-glyph motion. The timer
+    // exists only while the panel is visible; Reduce Motion keeps a static cat.
+    private func updateCatTimer() {
+        catTimer?.invalidate()
+        catTimer = nil
+        guard catEnabled, catAnimating,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            hideLaserOverlay()
+            needsDisplay = true
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        catLastUpdate = now
+        if nextCatActivityIn <= 0 { nextCatActivityIn = Double.random(in: 1...10) }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.advanceCat()
+            self?.needsDisplay = true
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        catTimer = timer
+    }
+
+    fileprivate func motionState() -> CatMotionState {
+        let activityInFlight = catAction != .walk || pendingCatAction != nil
+        return CatMotionState(position: catPosition,
+                              direction: catDirection,
+                              nextActivityIn: activityInFlight
+                                  ? Double.random(in: 1...10) : nextCatActivityIn)
+    }
+
+    fileprivate func restoreMotionState(_ state: CatMotionState) {
+        catPosition = min(max(state.position, 0), 1)
+        catDirection = state.direction < 0 ? -1 : 1
+        nextCatActivityIn = state.nextActivityIn
+    }
+
+    private func advanceCat() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = min(max(now - catLastUpdate, 0), 0.5)
+        catLastUpdate = now
+
+        if catAction != .walk, now >= catActionEndsAt {
+            if catAction == .zoom {
+                // Decelerate naturally onto the next bar before recovering.
+                catAction = .walk
+                queueCatAction(.pant, duration: 7, at: now)
+            } else {
+                catAction = .walk
+                nextCatActivityIn = Double.random(in: 1...10)
+            }
+        }
+        if catAction == .walk, pendingCatAction == nil {
+            nextCatActivityIn -= elapsed
+            if nextCatActivityIn <= 0 { queueRandomCatAction(at: now) }
+        }
+
+        let speed: CGFloat
+        switch catAction {
+        case .walk: speed = 1
+        case .zoom: speed = 5
+        case .blink, .lick, .pant, .sit, .stretch: speed = 0
+        }
+        guard speed > 0 else { return }
+
+        // A normal crossing takes ten seconds regardless of bar count.
+        // Clamp before reversing so the cat always reaches the end bar.
+        let nextPosition = catPosition + catDirection * CGFloat(elapsed / 10) * speed
+        if let stop = pendingCatStop, let pending = pendingCatAction {
+            let reachedStop = catDirection > 0 ? nextPosition >= stop : nextPosition <= stop
+            if reachedStop {
+                catPosition = stop
+                if stop >= 1 { catDirection = -1 }
+                if stop <= 0 { catDirection = 1 }
+                pendingCatStop = nil
+                pendingCatAction = nil
+                startCatAction(pending.action, duration: pending.duration, at: now)
+                return
+            }
+        }
+
+        catPosition = nextPosition
+        if catPosition >= 1 {
+            catPosition = 1
+            catDirection = -1
+        } else if catPosition <= 0 {
+            catPosition = 0
+            catDirection = 1
+        }
+    }
+
+    private func queueRandomCatAction(at now: TimeInterval) {
+        let roll = Int.random(in: 0..<100)
+        let activity: (CatAction, TimeInterval)
+        switch roll {
+        case 0..<25: activity = (.lick, 8)
+        case 25..<45: activity = (.blink, 6)
+        case 45..<55: activity = (.zoom, 3.5)
+        case 55..<80: activity = (.sit, 12)
+        default: activity = (.stretch, 8)
+        }
+        queueCatAction(activity.0, duration: activity.1, at: now)
+    }
+
+    private func queueCatAction(_ action: CatAction, duration: TimeInterval, at now: TimeInterval) {
+        // Zoomies are intentionally sudden. All stationary activities wait for
+        // the next bar top instead of snapping the cat by a few pixels.
+        if action == .zoom || values.count < 2 {
+            startCatAction(action, duration: duration, at: now)
+            return
+        }
+        let last = CGFloat(values.count - 1)
+        let barPosition = catPosition * last
+        let targetBar: CGFloat
+        if catDirection > 0 {
+            targetBar = min(last, floor(barPosition + 0.0001) + 1)
+        } else {
+            targetBar = max(0, ceil(barPosition - 0.0001) - 1)
+        }
+        pendingCatAction = (action, duration)
+        pendingCatStop = targetBar / last
+    }
+
+    private func startCatAction(_ action: CatAction, duration: TimeInterval, at now: TimeInterval) {
+        catAction = action
+        catActionStartedAt = now
+        catActionEndsAt = now + duration
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard !values.isEmpty else { return }
@@ -112,7 +312,9 @@ final class SparkBarView: NSView {
         let n = CGFloat(values.count)
         let gap: CGFloat = values.count > 16 ? 1 : 2
         let bw = (bounds.width - gap * (n - 1)) / n
-        let barArea = bounds.height - axisHeight - captionHeight
+        let graphHeight = bounds.height - axisHeight - captionHeight
+        // Reserve just enough room above the tallest bar for the cat.
+        let barArea = graphHeight - (catEnabled ? 11 : 0)
 
         let tiny: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
@@ -152,12 +354,309 @@ final class SparkBarView: NSView {
             NSBezierPath(roundedRect: rect, xRadius: min(bw / 3, 2), yRadius: min(bw / 3, 2)).fill()
         }
 
+        if catEnabled { drawCat(maxValue: maxV, barWidth: bw, gap: gap, barArea: barArea) }
+
         for (frac, text) in axis {
             let t = text as NSString
             let w = t.size(withAttributes: tiny).width
             let x = min(max(frac * bounds.width - w / 2, 0), bounds.width - w)
             t.draw(at: NSPoint(x: x, y: 0), withAttributes: tiny)
         }
+    }
+
+    private func drawCat(maxValue: Double, barWidth: CGFloat, gap: CGFloat, barArea: CGFloat) {
+        guard !values.isEmpty else { return }
+        let last = max(values.count - 1, 0)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let now = ProcessInfo.processInfo.systemUptime
+        let action = reduceMotion ? CatAction.walk : catAction
+        let actionDuration = max(catActionEndsAt - catActionStartedAt, 0.001)
+        let actionProgress = min(max((now - catActionStartedAt) / actionDuration, 0), 1)
+
+        func x(_ index: Int) -> CGFloat { CGFloat(index) * (barWidth + gap) + barWidth / 2 }
+        func y(_ index: Int) -> CGFloat {
+            let value = values[index]
+            let height = value > 0 ? max(2, CGFloat(value / maxValue) * barArea) : 1.5
+            return axisHeight + height
+        }
+
+        let position: CGFloat
+        if reduceMotion {
+            let index = values.indices.max(by: { values[$0] < values[$1] }) ?? 0
+            position = last > 0 ? CGFloat(index) / CGFloat(last) : 0
+        } else {
+            position = catPosition
+        }
+        let catX = x(0) + (x(last) - x(0)) * position
+        let catY: CGFloat
+        if last == 0 || position >= 1 {
+            catY = y(last)
+        } else {
+            let barPosition = position * CGFloat(last)
+            let lower = min(Int(floor(barPosition)), last - 1)
+            let upper = lower + 1
+            let segmentProgress = barPosition - CGFloat(lower)
+            let heightChange = abs(y(upper) - y(lower))
+            let hopHeight: CGFloat = heightChange > 2 ? 3 + heightChange * 0.2 : 0.5
+            catY = y(lower) + (y(upper) - y(lower)) * segmentProgress
+                + sin(.pi * segmentProgress) * hopHeight
+        }
+
+        let moving = action == .walk || action == .zoom
+        let gait = Int(now * (action == .zoom ? 9 : 4)).isMultiple(of: 2)
+        let actionWave = CGFloat(sin(.pi * actionProgress))
+        let headX: CGFloat = action == .blink ? 0
+            : ((action == .sit || action == .pant) ? 0.5 : 1)
+        let headYOffset: CGFloat
+        switch action {
+        case .sit: headYOffset = 1.2
+        case .stretch: headYOffset = -0.7
+        case .lick: headYOffset = -0.7 + CGFloat(sin(actionProgress * .pi * 8)) * 0.35
+        case .pant: headYOffset = 0.7 + CGFloat(sin(actionProgress * .pi * 12)) * 0.18
+        case .blink: headYOffset = -0.5 * actionWave
+        default: headYOffset = 0
+        }
+        let headXOffset = headX - 1
+        let catColor = NSColor.labelColor.withAlphaComponent(0.78)
+
+        if action == .zoom, !reduceMotion {
+            updateLaserOverlay(catX: catX, catY: catY, at: now)
+        } else {
+            hideLaserOverlay()
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        let transform = NSAffineTransform()
+        transform.translateX(by: catX, yBy: catY)
+        if catDirection < 0, !reduceMotion { transform.scaleX(by: -1, yBy: 1) }
+        transform.concat()
+        catColor.setFill()
+        catColor.setStroke()
+
+        if action == .zoom {
+            let streaks = NSBezierPath()
+            streaks.move(to: NSPoint(x: -9, y: 2))
+            streaks.line(to: NSPoint(x: -6, y: 2))
+            streaks.move(to: NSPoint(x: -8, y: 4))
+            streaks.line(to: NSPoint(x: -5.5, y: 4))
+            streaks.lineWidth = 0.7
+            streaks.stroke()
+        }
+
+        let bodyRect: NSRect
+        switch action {
+        case .sit: bodyRect = NSRect(x: -2.7, y: 0.5, width: 4.9, height: 7.2)
+        case .blink: bodyRect = NSRect(x: -4.8, y: 0.7 + actionWave * 0.2,
+                                       width: 8.3, height: 5.5 - actionWave * 0.3)
+        case .pant:
+            let breath = abs(CGFloat(sin(actionProgress * .pi * 12))) * 0.45
+            bodyRect = NSRect(x: -2.9 - breath / 2, y: 0.5,
+                              width: 5.2 + breath, height: 6.4 + breath / 2)
+        case .stretch: bodyRect = NSRect(x: -5.2, y: 0.7, width: 9, height: 3.3)
+        case .zoom: bodyRect = NSRect(x: -5.3, y: 1, width: 8.5, height: 4)
+        default: bodyRect = NSRect(x: -4.5, y: 1, width: 7, height: 4.5)
+        }
+        NSBezierPath(ovalIn: bodyRect).fill()
+        NSBezierPath(ovalIn: NSRect(x: headX, y: 2.2 + headYOffset,
+                                    width: 4.5, height: 4.5)).fill()
+
+        let ears = NSBezierPath()
+        ears.move(to: NSPoint(x: 1.5 + headXOffset, y: 5.7 + headYOffset))
+        ears.line(to: NSPoint(x: 2.1 + headXOffset, y: 8 + headYOffset))
+        ears.line(to: NSPoint(x: 3.1 + headXOffset, y: 6.3 + headYOffset))
+        ears.move(to: NSPoint(x: 3.5 + headXOffset, y: 6.3 + headYOffset))
+        ears.line(to: NSPoint(x: 4.8 + headXOffset, y: 7.9 + headYOffset))
+        ears.line(to: NSPoint(x: 5 + headXOffset, y: 5.5 + headYOffset))
+        ears.fill()
+
+        let tail = NSBezierPath()
+        if action == .blink {
+            // A curled tail and loaf-shaped body make the slow blink readable
+            // even when the eye itself is only a fraction of a point tall.
+            tail.move(to: NSPoint(x: -4, y: 2.8))
+            tail.curve(to: NSPoint(x: 1.2, y: 1.2),
+                       controlPoint1: NSPoint(x: -6.5, y: 0.4),
+                       controlPoint2: NSPoint(x: -1.5, y: 0.2))
+        } else {
+            let tailFlick = action == .zoom ? 3.5
+                : (action == .pant ? 4.8 : 6.8 + CGFloat(sin(now * 5)) * 0.8)
+            tail.move(to: NSPoint(x: -4, y: 3.5))
+            tail.curve(to: NSPoint(x: -6.2, y: tailFlick),
+                       controlPoint1: NSPoint(x: -7, y: 3),
+                       controlPoint2: NSPoint(x: -7, y: 6.3))
+        }
+        tail.lineWidth = action == .blink ? 1.5 : 1.2
+        tail.lineCapStyle = .round
+        tail.stroke()
+
+        let legs = NSBezierPath()
+        if moving {
+            let stride: CGFloat = gait ? 0.6 : -0.6
+            for (index, baseX) in [-3.2, -1.8, -0.1, 1.2].enumerated() {
+                let offset = index.isMultiple(of: 2) ? stride : -stride
+                legs.move(to: NSPoint(x: baseX, y: 2))
+                legs.line(to: NSPoint(x: baseX + offset, y: 0))
+            }
+        } else if action == .stretch {
+            // Two planted hind legs and two long front legs.
+            legs.move(to: NSPoint(x: -4.1, y: 2))
+            legs.line(to: NSPoint(x: -4.5, y: 0))
+            legs.move(to: NSPoint(x: -2.7, y: 2))
+            legs.line(to: NSPoint(x: -2.4, y: 0))
+            legs.move(to: NSPoint(x: 1.5, y: 2))
+            legs.line(to: NSPoint(x: 5.5, y: 0))
+            legs.move(to: NSPoint(x: 0.3, y: 2))
+            legs.line(to: NSPoint(x: 4.2, y: 0))
+        } else if action == .lick {
+            // Three grounded legs; the raised paw below is the fourth.
+            for baseX in [-3.2, -1.7, 0.2] {
+                legs.move(to: NSPoint(x: baseX, y: 2))
+                legs.line(to: NSPoint(x: baseX, y: 0))
+            }
+        } else if action == .pant || action == .sit {
+            // Front legs plus two rear paws visible beneath the seated body.
+            legs.move(to: NSPoint(x: 0.1, y: 3.2))
+            legs.line(to: NSPoint(x: 0.6, y: 0))
+            legs.move(to: NSPoint(x: 1.2, y: 3))
+            legs.line(to: NSPoint(x: 1.7, y: 0))
+            legs.move(to: NSPoint(x: -2.5, y: 1.5))
+            legs.line(to: NSPoint(x: -3.2, y: 0))
+            legs.move(to: NSPoint(x: -1.5, y: 1.5))
+            legs.line(to: NSPoint(x: -1.2, y: 0))
+        } else if action != .blink {
+            for baseX in [-3.2, -1.8, -0.1, 1.2] {
+                legs.move(to: NSPoint(x: baseX, y: 2))
+                legs.line(to: NSPoint(x: baseX, y: 0))
+            }
+        }
+        legs.lineWidth = moving ? 0.85 : 0.95
+        legs.lineCapStyle = .round
+        legs.stroke()
+
+        if action == .lick {
+            let paw = NSBezierPath()
+            paw.move(to: NSPoint(x: -0.3, y: 2.3))
+            paw.line(to: NSPoint(x: 3.4, y: 4 + headYOffset))
+            paw.lineWidth = 1.6
+            paw.lineCapStyle = .round
+            paw.stroke()
+            if Int(actionProgress * 8).isMultiple(of: 2) {
+                catColor.setFill()
+                NSBezierPath(ovalIn: NSRect(x: 4.5, y: 1.4 + headYOffset,
+                                            width: 1.5, height: 2.3)).fill()
+            }
+        }
+
+        // Contrasting details are monochrome cutouts from the silhouette.
+        NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
+        if action == .pant {
+            let mouthHeight = 0.9 + abs(CGFloat(sin(actionProgress * .pi * 12))) * 0.9
+            NSBezierPath(ovalIn: NSRect(x: 4 + headXOffset,
+                                        y: 2.1 + headYOffset - mouthHeight / 2,
+                                        width: 1.2, height: mouthHeight)).fill()
+        }
+
+        if action == .zoom {
+            drawLaserEyes()
+        } else {
+            // A contrasting eye becomes a short line during the slow-blink action.
+            NSColor.controlBackgroundColor.withAlphaComponent(0.9).setStroke()
+            let blinkClosed = action == .blink && sin(.pi * actionProgress) > 0.35
+            if blinkClosed {
+                let eye = NSBezierPath()
+                eye.move(to: NSPoint(x: 4 + headXOffset, y: 4.7 + headYOffset))
+                eye.line(to: NSPoint(x: 4.8 + headXOffset, y: 4.7 + headYOffset))
+                eye.lineWidth = 0.65
+                eye.stroke()
+            } else {
+                NSBezierPath(ovalIn: NSRect(x: 4.1 + headXOffset, y: 4.5 + headYOffset,
+                                            width: 0.75, height: 0.75)).fill()
+            }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawLaserEyes() {
+        let origins = [NSPoint(x: 2.6, y: 5), NSPoint(x: 4.15, y: 4.9)]
+        let colors = laserOverlay?.colors ?? []
+        for (index, origin) in origins.enumerated() {
+            (index < colors.count ? colors[index] : .systemRed).setFill()
+            NSBezierPath(ovalIn: NSRect(x: origin.x - 0.6, y: origin.y - 0.6,
+                                        width: 1.2, height: 1.2)).fill()
+        }
+    }
+
+    private func updateLaserOverlay(catX: CGFloat, catY: CGFloat, at now: TimeInterval) {
+        guard let hostWindow = window, let screen = hostWindow.screen else {
+            hideLaserOverlay()
+            return
+        }
+        ensureLaserOverlay(on: screen)
+        guard let overlay = laserOverlay else { return }
+
+        let facing: CGFloat = catDirection < 0 ? -1 : 1
+        let localEyes = [NSPoint(x: 2.6, y: 5), NSPoint(x: 4.15, y: 4.9)]
+        let screenOrigins = localEyes.map { eye -> NSPoint in
+            let viewPoint = NSPoint(x: catX + facing * eye.x, y: catY + eye.y)
+            let windowPoint = convert(viewPoint, to: nil)
+            return hostWindow.convertPoint(toScreen: windowPoint)
+        }
+        overlay.origins = screenOrigins.map {
+            NSPoint(x: $0.x - screen.frame.minX, y: $0.y - screen.frame.minY)
+        }
+
+        // Hold each random direction for a few display frames. Every ray is
+        // intersected with the display bounds, so it always reaches an edge.
+        let flash = Int(floor(now * 12))
+        overlay.laserVisible = !flash.isMultiple(of: 4)
+        func randomUnit(_ salt: Double) -> CGFloat {
+            let value = sin(Double(flash) * 12.9898 + salt * 78.233) * 43_758.5453
+            return CGFloat(value - floor(value))
+        }
+        overlay.endpoints = overlay.origins.enumerated().map { index, origin in
+            let angle = randomUnit(Double(index) + 0.7) * .pi * 2
+            return rayEndpoint(from: origin, angle: angle, in: overlay.bounds)
+        }
+        overlay.colors = overlay.origins.map { _ in .systemRed }
+        overlay.needsDisplay = true
+        if laserWindow?.isVisible != true { laserWindow?.orderFrontRegardless() }
+    }
+
+    private func rayEndpoint(from origin: NSPoint, angle: CGFloat, in rect: NSRect) -> NSPoint {
+        let dx = cos(angle), dy = sin(angle)
+        var distances: [CGFloat] = []
+        if dx > 0.0001 { distances.append((rect.maxX - origin.x) / dx) }
+        if dx < -0.0001 { distances.append((rect.minX - origin.x) / dx) }
+        if dy > 0.0001 { distances.append((rect.maxY - origin.y) / dy) }
+        if dy < -0.0001 { distances.append((rect.minY - origin.y) / dy) }
+        let distance = distances.filter { $0 >= 0 }.min() ?? 0
+        return NSPoint(x: origin.x + dx * distance, y: origin.y + dy * distance)
+    }
+
+    private func ensureLaserOverlay(on screen: NSScreen) {
+        if let laserWindow, laserWindow.frame == screen.frame { return }
+        laserWindow?.orderOut(nil)
+        let overlay = LaserOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        let panel = NSPanel(contentRect: screen.frame,
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.level = .screenSaver
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.contentView = overlay
+        laserOverlay = overlay
+        laserWindow = panel
+    }
+
+    private func hideLaserOverlay() {
+        guard laserWindow?.isVisible == true else { return }
+        laserOverlay?.laserVisible = false
+        laserWindow?.orderOut(nil)
     }
 }
 
@@ -225,6 +724,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menuSignature = ""
     var latestPanelData: (period: Period, total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
+    fileprivate var savedCatMotionState: CatMotionState?
     var panelView: NSStackView?
     var periodField: NSTextField?
     var periodButtons: [NSButton] = []
@@ -240,6 +740,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var showGraph = appDefaults.object(forKey: "showGraph") as? Bool ?? true
     var showProviderIcons = appDefaults.object(forKey: "showProviderIcons") as? Bool ?? true
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
+    // Experimental and opt-in: an unset preference must never enable animation.
+    var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
 
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
@@ -357,6 +859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             guard let self = self else { return }
             self.menuIsOpen = true
+            self.sparkView?.catAnimating = self.showExperimentalCat
             self.refresh()
         }
         NotificationCenter.default.addObserver(
@@ -364,6 +867,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             guard let self = self else { return }
             self.menuIsOpen = false
+            self.sparkView?.catAnimating = false
             if let target = self.pendingBar {
                 self.pendingBar = nil
                 self.animateBar(to: target)
@@ -398,6 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle("Show Provider Icons", showProviderIcons, #selector(toggleProviderIcons))
         toggle("Show Full Model Names", showFullModelNames, #selector(toggleFullModelNames))
         menu.addItem(.separator())
+        toggle("Experimental Cat", showExperimentalCat, #selector(toggleExperimentalCat))
+        menu.addItem(.separator())
         // Disabled footer showing the running version, for debugging.
         let version = NSMenuItem(title: "v\(appVersion)", action: nil, keyEquivalent: "")
         version.isEnabled = false
@@ -419,6 +925,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
+    @objc func toggleExperimentalCat() {
+        showExperimentalCat.toggle()
+        applyViewChange("showExperimentalCat", showExperimentalCat)
+    }
     @objc func toggleProviderIcons() { showProviderIcons.toggle(); applyViewChange("showProviderIcons", showProviderIcons) }
     @objc func toggleFullModelNames() { showFullModelNames.toggle(); applyViewChange("showFullModelNames", showFullModelNames) }
 
@@ -723,6 +1233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {
         guard let panel = panelView else { return }
+        if let sparkView { savedCatMotionState = sparkView.motionState() }
         for v in panel.arrangedSubviews {
             panel.removeArrangedSubview(v)
             v.removeFromSuperview()
@@ -837,6 +1348,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             spark.values = totalBuckets(active)
             spark.caption = period.caption
             spark.axis = period.axis(cal: cal, now: Date())
+            spark.catEnabled = showExperimentalCat
+            if let savedCatMotionState { spark.restoreMotionState(savedCatMotionState) }
+            spark.catAnimating = showExperimentalCat && menuIsOpen
             sparkView = spark
             panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(spark)
