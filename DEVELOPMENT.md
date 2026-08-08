@@ -7,8 +7,15 @@ Requires macOS 14+ and the Xcode Command Line Tools.
 ```sh
 git clone https://github.com/shrivara/token-bar
 cd token-bar
-./build.sh
+./build.sh                    # release build with an ad-hoc code seal
+./Scripts/verify-app.sh
 open TokenBar.app
+```
+
+Regenerate the checked-in app icon after changing its drawing script:
+
+```sh
+./Scripts/generate-app-icon.swift Assets/AppIcon.icns
 ```
 
 Add `TokenBar.app` to System Settings → Login Items if you want the development build to start at login.

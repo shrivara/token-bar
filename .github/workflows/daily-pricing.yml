@@ -67,8 +67,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Run tests
         run: swift test
-      - name: Build app bundle
-        run: ./build.sh
+      - name: Build and verify app bundle
+        run: |
+          ./build.sh
+          ./Scripts/verify-app.sh
       - name: Commit and tag release
         env:
           VERSION: ${{ steps.version.outputs.version }}

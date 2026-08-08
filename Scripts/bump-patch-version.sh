@@ -29,11 +29,16 @@ from pathlib import Path
 
 old = os.environ["BUILD_VERSION"]
 new = os.environ["NEW_VERSION"]
-for name in ("build.sh", "Sources/token-bar/main.swift"):
+expected_counts = {
+    "build.sh": 2,  # short version and monotonically increasing bundle version
+    "Sources/token-bar/main.swift": 1,
+}
+for name, expected in expected_counts.items():
     path = Path(name)
     text = path.read_text()
-    if text.count(old) != 1:
-        raise SystemExit(f"Expected exactly one {old!r} in {name}")
+    actual = text.count(old)
+    if actual != expected:
+        raise SystemExit(f"Expected {expected} occurrences of {old!r} in {name}, found {actual}")
     path.write_text(text.replace(old, new))
 PY
 

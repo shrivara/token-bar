@@ -8,7 +8,22 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.8"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.9"
+
+// Use the bundle identifier for preferences even when Homebrew launches the
+// raw executable (which otherwise writes to token-bar.plist). Preserve settings
+// from existing formula installs on first use of each key.
+let appDefaults: UserDefaults = {
+    let canonical = UserDefaults(suiteName: "com.shrivara.tokenbar") ?? .standard
+    let legacy = UserDefaults(suiteName: "token-bar")
+    for key in ["period", "showGraph", "showProviderIcons", "showFullModelNames"]
+        where canonical.object(forKey: key) == nil {
+        if let value = legacy?.object(forKey: key) {
+            canonical.set(value, forKey: key)
+        }
+    }
+    return canonical
+}()
 
 // MARK: - Period switching (D / W / M / Y)
 
@@ -214,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var periodField: NSTextField?
     var periodButtons: [NSButton] = []
     var screenshotButton: NSButton?
-    var period: Period = Period(rawValue: UserDefaults.standard.integer(forKey: "period")) ?? .day
+    var period: Period = Period(rawValue: appDefaults.integer(forKey: "period")) ?? .day
 
     // Left-click shows this info panel; right-click shows the View menu below.
     let panelMenu = NSMenu()
@@ -222,9 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // View preferences (right-click menu). object(forKey:) distinguishes an
     // unset default (nil) from an explicit false, so first launch keeps the
     // graph and icons on.
-    var showGraph = UserDefaults.standard.object(forKey: "showGraph") as? Bool ?? true
-    var showProviderIcons = UserDefaults.standard.object(forKey: "showProviderIcons") as? Bool ?? true
-    var showFullModelNames = UserDefaults.standard.bool(forKey: "showFullModelNames")
+    var showGraph = appDefaults.object(forKey: "showGraph") as? Bool ?? true
+    var showProviderIcons = appDefaults.object(forKey: "showProviderIcons") as? Bool ?? true
+    var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
 
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
@@ -394,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // latest scan. Waiting for another disk scan allowed the old panel to open
     // first and then visibly resize when that scan completed.
     func applyViewChange(_ key: String, _ value: Bool) {
-        UserDefaults.standard.set(value, forKey: key)
+        appDefaults.set(value, forKey: key)
         menuSignature = ""
         if let data = latestPanelData, data.period == period {
             rebuildMenu(total: data.total, sources: data.sources)
@@ -489,7 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func periodClicked(_ sender: NSButton) {
         guard let p = Period(rawValue: sender.tag), p != period else { return }
         period = p
-        UserDefaults.standard.set(p.rawValue, forKey: "period")
+        appDefaults.set(p.rawValue, forKey: "period")
         refresh()
     }
 
@@ -758,6 +773,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let b = NSButton(title: p.letter, target: self, action: #selector(periodClicked(_:)))
             b.isBordered = false
             b.tag = p.rawValue
+            b.toolTip = "Show \(p.title)"
+            b.setAccessibilityLabel("Show \(p.title)")
             b.attributedTitle = NSAttributedString(
                 string: p.letter,
                 attributes: [
