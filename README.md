@@ -3,7 +3,7 @@
 A minimal macOS menu bar app showing today's AI usage: spend, tokens in/out, and cache hit rate.
 
 <p align="center">
-  <img src="docs/screenshot.png" width="367" alt="token-bar in the menu bar with its dropdown panel open, showing today's spend, tokens, cache hit rate, and a per-model breakdown">
+  <img src="docs/screenshot.png" width="425" alt="Token Bar panel showing yearly spend, token usage, cache hit rate, a spend graph, and per-model breakdowns">
 </p>
 
 The numbers roll odometer-style whenever new usage lands. Left-click the menu bar item for a panel with the period's totals, a spend graph, and a per-tool, per-model breakdown; the **D / W / M / Y** buttons switch between day, week, month, and year. The camera button copies a clean Retina PNG to the clipboard as both an image and a pasteable file. Right-click (or Control-click) for view options — toggle the spend graph, provider icons, and full vs. short model names — and to quit.
@@ -19,18 +19,16 @@ The numbers roll odometer-style whenever new usage lands. Left-click the menu ba
 
 Updates are instant: file-system events fire the moment a session writes new usage (coalesced to at most about one refresh per second while streaming), with a 60s timer as backstop and for the midnight rollover. Tools with no activity today are hidden from the panel.
 
-## Install
+## For users
 
-### Homebrew
-
-Install:
+### Install
 
 ```sh
 brew install shrivara/tap/token-bar
 brew services start token-bar   # start now + at login
 ```
 
-Update:
+### Update
 
 ```sh
 brew update
@@ -38,23 +36,10 @@ brew upgrade token-bar
 brew services restart token-bar
 ```
 
-### From source
-
-Requires macOS 14+ and the Xcode Command Line Tools.
+### Check the numbers without opening the app
 
 ```sh
-git clone https://github.com/shrivara/token-bar
-cd token-bar
-./build.sh
-open TokenBar.app
-```
-
-Add `TokenBar.app` to System Settings → Login Items to start it at login.
-
-### Check the numbers without the app
-
-```sh
-token-bar --print   # or ./TokenBar.app/Contents/MacOS/TokenBar --print
+token-bar --print
 ```
 
 Prints today's per-model breakdown and totals to stdout, then exits.
@@ -65,7 +50,26 @@ Prints today's per-model breakdown and totals to stdout, then exits.
 - API-equivalent pricing comes from an offline snapshot of [models.dev](https://models.dev/), bundled with the app under its MIT license. Prices are looked up by provider and model for every message, including cache and reasoning tokens. Qualified provider variants fall back to their base provider: for example, `openai-codex` falls back to the matching `openai` model price. Because this is an approximation, it remains marked `~`. A model that isn't in the catalog (or lacks a complete price) contributes $0 and is marked `~` in the panel — the tool's own recorded cost is not trusted, and there is no rate guessing.
 - Everything is read locally at runtime. No network access, no telemetry.
 
-## Updating prices
+## For developers
+
+Requires macOS 14+ and the Xcode Command Line Tools.
+
+```sh
+git clone https://github.com/shrivara/token-bar
+cd token-bar
+./build.sh
+open TokenBar.app
+```
+
+To print the local build's numbers without opening the app:
+
+```sh
+./TokenBar.app/Contents/MacOS/TokenBar --print
+```
+
+Add `TokenBar.app` to System Settings → Login Items if you want the development build to start at login.
+
+### Updating prices
 
 The **Daily pricing release** GitHub Actions workflow checks models.dev once a day. If the normalized catalog changed, it bumps the patch version, runs the tests, builds the app, and commits and tags the new version. It then triggers the Homebrew tap to update its formula and build bottles; the tap's own daily check is a fallback. If nothing changed, no release is created.
 
