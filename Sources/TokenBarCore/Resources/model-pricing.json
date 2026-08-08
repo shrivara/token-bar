@@ -26396,9 +26396,9 @@
           "output": 2.992
         },
         "z-ai/glm-5.2": {
-          "cache_read": 0.06162,
-          "input": 0.3318,
-          "output": 1.0428
+          "cache_read": 0.0468,
+          "input": 0.252,
+          "output": 0.792
         },
         "z-ai/glm-5v-turbo": {
           "cache_read": 0.24,
