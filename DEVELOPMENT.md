@@ -11,13 +11,18 @@ cd token-bar
 open TokenBar.app
 ```
 
-To print the local build's numbers without opening the app:
+Add `TokenBar.app` to System Settings → Login Items if you want the development build to start at login.
+
+## Debug usage scanning
+
+The `--print` diagnostic is available only in debug builds. SwiftPM uses the
+debug configuration by default:
 
 ```sh
-./TokenBar.app/Contents/MacOS/TokenBar --print
+swift run token-bar --print
 ```
 
-Add `TokenBar.app` to System Settings → Login Items if you want the development build to start at login.
+This prints today's per-model breakdown and totals to stdout, then exits.
 
 ## Updating prices
 

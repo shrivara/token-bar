@@ -905,6 +905,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+#if DEBUG
 if CommandLine.arguments.contains("--print") {
     let dayStart = Calendar.current.startOfDay(for: Date())
     let sources = [scanClaudeCode(since: dayStart), scanCodex(since: dayStart),
@@ -920,6 +921,7 @@ if CommandLine.arguments.contains("--print") {
     print("BAR: \(fmtMoney(total.cost))  \(fmtTokens(total.input))↑ \(fmtTokens(total.output))↓  \(String(format: "%.0f%%", total.hitRate * 100))")
     exit(0)
 }
+#endif
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

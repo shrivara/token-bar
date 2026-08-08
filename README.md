@@ -36,14 +36,6 @@ brew upgrade token-bar
 brew services restart token-bar
 ```
 
-### Check the numbers without opening the app
-
-```sh
-token-bar --print
-```
-
-Prints today's per-model breakdown and totals to stdout, then exits.
-
 ## Notes
 
 - Spend is API-equivalent pricing. If you're on a subscription plan (e.g. Claude Max), the dollar figure shows what the usage *would* cost via the API, not what you're billed.
