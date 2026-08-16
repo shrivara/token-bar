@@ -180,7 +180,8 @@ private func price(_ usage: PricedUsage, model: PricingCatalog.Model) -> Double?
 
 private func providerID(_ raw: String) -> String {
     switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "amazon bedrock", "amazon_bedrock", "aws-bedrock", "bedrock": return "amazon-bedrock"
+    case "amazon bedrock", "amazon_bedrock", "aws-bedrock", "bedrock", "bedrock-mantle":
+        return "amazon-bedrock"
     case "openai", "open ai", "open_ai": return "openai"
     default: return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }

@@ -355,11 +355,12 @@ final class CodexScannerTests: FixtureTestCase {
 
 final class PiScannerTests: FixtureTestCase {
     func entry(ts: String, role: String = "assistant", type: String = "message",
-               model: String = "claude-sonnet-4-5", input: Int = 0, output: Int = 0,
-               cacheRead: Int = 0, cacheWrite: Int = 0, cost: Double = 0) -> String {
+               provider: String = "anthropic", model: String = "claude-sonnet-4-5",
+               input: Int = 0, output: Int = 0, cacheRead: Int = 0,
+               cacheWrite: Int = 0, cost: Double = 0) -> String {
         let d: [String: Any] = [
             "type": type, "id": UUID().uuidString, "timestamp": ts,
-            "message": ["role": role, "model": model, "provider": "anthropic",
+            "message": ["role": role, "model": model, "provider": provider,
                         "usage": ["input": input, "output": output,
                                   "cacheRead": cacheRead, "cacheWrite": cacheWrite,
                                   "totalTokens": input + output,
@@ -419,13 +420,29 @@ final class PiScannerTests: FixtureTestCase {
         {"providers":{"anthropic":{"models":{"claude-test":{"input":2,"output":10}}}}}
         """
         let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
-        let line = entry(ts: inRange, model: "claude-test", input: 1_000_000, output: 1_000_000)
-            .replacingOccurrences(of: "\"provider\":\"anthropic\"", with: "\"provider\":\"anthropic-custom/plan\"")
+        let line = entry(ts: inRange, provider: "anthropic-custom/plan", model: "claude-test",
+                         input: 1_000_000, output: 1_000_000)
         try write([line], to: "--proj--/s1.jsonl")
 
         let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
         XCTAssertEqual(s.agg.cost, 12, accuracy: 1e-9)
         XCTAssertEqual(s.unknownPricing, ["anthropic-custom/plan/claude-test"])
+    }
+
+    func testBedrockMantleUsesAmazonBedrockCatalogPrices() throws {
+        let json = """
+        {"providers":{"amazon-bedrock":{"models":{"openai.gpt-5.6-sol":{"input":5.5,"output":33}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try write([
+            entry(ts: inRange, provider: "bedrock-mantle", model: "openai.gpt-5.6-sol",
+                  output: 1_000_000),
+        ], to: "--proj--/s1.jsonl")
+
+        let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 33, accuracy: 1e-9)
+        XCTAssertNotNil(s.perModel["amazon-bedrock/openai.gpt-5.6-sol"])
+        XCTAssertTrue(s.unknownPricing.isEmpty)
     }
 }
 

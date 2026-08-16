@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.19"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.20"
 
 // Use the bundle identifier for preferences even when Homebrew launches the
 // raw executable (which otherwise writes to token-bar.plist). Preserve settings
@@ -16,7 +16,8 @@ let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? 
 let appDefaults: UserDefaults = {
     let canonical = UserDefaults(suiteName: "com.shrivara.tokenbar") ?? .standard
     let legacy = UserDefaults(suiteName: "token-bar")
-    for key in ["period", "showGraph", "showProviderIcons", "showFullModelNames"]
+    for key in ["period", "showGraph", "showProviderIcons", "showFullModelNames",
+                "menuBarFields"]
         where canonical.object(forKey: key) == nil {
         if let value = legacy?.object(forKey: key) {
             canonical.set(value, forKey: key)
@@ -24,6 +25,28 @@ let appDefaults: UserDefaults = {
     }
     return canonical
 }()
+
+struct MenuBarFields: OptionSet {
+    let rawValue: Int
+
+    static let spend = MenuBarFields(rawValue: 1 << 0)
+    static let inputTokens = MenuBarFields(rawValue: 1 << 1)
+    static let outputTokens = MenuBarFields(rawValue: 1 << 2)
+    static let cacheHitRate = MenuBarFields(rawValue: 1 << 3)
+    static let all: MenuBarFields = [.spend, .inputTokens, .outputTokens, .cacheHitRate]
+
+    static let defaultsKey = "menuBarFields"
+
+    static func load(from defaults: UserDefaults) -> MenuBarFields {
+        guard let number = defaults.object(forKey: defaultsKey) as? NSNumber else { return .all }
+        let fields = MenuBarFields(rawValue: number.intValue & all.rawValue)
+        guard fields.isEmpty else { return fields }
+
+        // A missing/corrupt selection must not leave an invisible status item.
+        defaults.set(MenuBarFields.spend.rawValue, forKey: defaultsKey)
+        return .spend
+    }
+}
 
 // MARK: - Period switching (D / W / M / Y)
 
@@ -740,6 +763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var showGraph = appDefaults.object(forKey: "showGraph") as? Bool ?? true
     var showProviderIcons = appDefaults.object(forKey: "showProviderIcons") as? Bool ?? true
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
+    var menuBarFields = MenuBarFields.load(from: appDefaults)
     // Experimental and opt-in: an unset preference must never enable animation.
     var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
 
@@ -891,23 +915,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        func toggle(_ title: String, _ on: Bool, _ selector: Selector) {
+        func submenu(_ title: String) -> NSMenu {
+            let child = NSMenu(title: title)
+            child.autoenablesItems = false
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.submenu = child
+            menu.addItem(item)
+            return child
+        }
+
+        @discardableResult
+        func toggle(in targetMenu: NSMenu, _ title: String, _ on: Bool,
+                    _ selector: Selector) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
             item.target = self
             item.state = on ? .on : .off
-            menu.addItem(item)
+            targetMenu.addItem(item)
+            return item
         }
 
-        toggle("Show Spend Graph", showGraph, #selector(toggleGraph))
-        toggle("Show Provider Icons", showProviderIcons, #selector(toggleProviderIcons))
-        toggle("Show Full Model Names", showFullModelNames, #selector(toggleFullModelNames))
+        let menuBarMenu = submenu("Show in Menu Bar")
+        let canRemoveSelectedField = menuBarFields.rawValue.nonzeroBitCount > 1
+        func menuBarToggle(_ title: String, _ field: MenuBarFields, _ selector: Selector) {
+            let selected = menuBarFields.contains(field)
+            let item = toggle(in: menuBarMenu, title, selected, selector)
+            // Keep the sole selected field checked, rather than allowing the
+            // status item to become empty and impossible to find.
+            item.isEnabled = !selected || canRemoveSelectedField
+            if !item.isEnabled {
+                item.toolTip = "At least one item must remain visible in the menu bar."
+            }
+        }
+        menuBarToggle("Spend", .spend, #selector(toggleMenuBarSpend))
+        menuBarToggle("Input Tokens", .inputTokens, #selector(toggleMenuBarInputTokens))
+        menuBarToggle("Output Tokens", .outputTokens, #selector(toggleMenuBarOutputTokens))
+        menuBarToggle("Cache Hit Rate", .cacheHitRate, #selector(toggleMenuBarCacheHitRate))
+
+        let panelDisplayMenu = submenu("Panel Display")
+        toggle(in: panelDisplayMenu, "Spend Graph", showGraph, #selector(toggleGraph))
+        toggle(in: panelDisplayMenu, "Provider Icons", showProviderIcons,
+               #selector(toggleProviderIcons))
+        toggle(in: panelDisplayMenu, "Full Model Names", showFullModelNames,
+               #selector(toggleFullModelNames))
+        let cat = toggle(in: panelDisplayMenu, "Animated Cat (Experimental)",
+                         showExperimentalCat, #selector(toggleExperimentalCat))
+        cat.toolTip = "Appears on the spend graph."
+
         menu.addItem(.separator())
-        toggle("Experimental Cat", showExperimentalCat, #selector(toggleExperimentalCat))
-        menu.addItem(.separator())
-        // Disabled footer showing the running version, for debugging.
-        let version = NSMenuItem(title: "v\(appVersion)", action: nil, keyEquivalent: "")
+        // Disabled version label helps identify the running build.
+        let version = NSMenuItem(title: "Token Bar v\(appVersion)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
+        let quit = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
         return menu
     }
 
@@ -923,6 +984,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refresh()
         }
     }
+
+    func toggleMenuBarField(_ field: MenuBarFields) {
+        if menuBarFields.contains(field) {
+            guard menuBarFields.rawValue.nonzeroBitCount > 1 else { return }
+            menuBarFields.remove(field)
+        } else {
+            menuBarFields.insert(field)
+        }
+        appDefaults.set(menuBarFields.rawValue, forKey: MenuBarFields.defaultsKey)
+        setBarTitle(displayed)
+    }
+
+    @objc func toggleMenuBarSpend() { toggleMenuBarField(.spend) }
+    @objc func toggleMenuBarInputTokens() { toggleMenuBarField(.inputTokens) }
+    @objc func toggleMenuBarOutputTokens() { toggleMenuBarField(.outputTokens) }
+    @objc func toggleMenuBarCacheHitRate() { toggleMenuBarField(.cacheHitRate) }
 
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
     @objc func toggleExperimentalCat() {
@@ -1062,7 +1139,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setBarTitle(_ v: BarValues) {
-        let text = "\(fmtMoney(v.cost))  \(fmtTokens(v.input))↑ \(fmtTokens(v.output))↓  \(String(format: "%.0f%%", v.hit * 100))"
+        var sections: [String] = []
+        if menuBarFields.contains(.spend) { sections.append(fmtMoney(v.cost)) }
+        var tokens: [String] = []
+        if menuBarFields.contains(.inputTokens) { tokens.append("\(fmtTokens(v.input))↑") }
+        if menuBarFields.contains(.outputTokens) { tokens.append("\(fmtTokens(v.output))↓") }
+        if !tokens.isEmpty { sections.append(tokens.joined(separator: " ")) }
+        if menuBarFields.contains(.cacheHitRate) {
+            sections.append(String(format: "%.0f%%", v.hit * 100))
+        }
+        // Loading and menu actions enforce this invariant; retain a defensive
+        // fallback so the status item remains discoverable if state is changed elsewhere.
+        let text = sections.isEmpty ? fmtMoney(v.cost) : sections.joined(separator: "  ")
         // Monospaced digits keep the title from wobbling while values roll
         statusItem.button?.attributedTitle = NSAttributedString(
             string: text,
@@ -1208,8 +1296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
-    // Menu skeleton (panel container, separator, Quit) is created once; the
-    // panel's content is rebuilt in place so the menu can stay open.
+    // The panel container is created once; its content is rebuilt in place so
+    // the menu can stay open.
     func ensureMenuSkeleton() {
         guard panelMenu.items.isEmpty else { return }
         panelMenu.autoenablesItems = false
@@ -1224,11 +1312,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panelItem = NSMenuItem()
         panelItem.view = panel
         panelMenu.addItem(panelItem)
-
-        panelMenu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit", action: #selector(quitClicked), keyEquivalent: "q")
-        quit.target = self
-        panelMenu.addItem(quit)
     }
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {
