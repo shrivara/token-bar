@@ -75,6 +75,70 @@ public struct BucketSpec {
     }
 }
 
+// MARK: - Reporting periods
+
+public enum PeriodRangeStyle: Int {
+    case calendar, relative
+}
+
+public enum UsagePeriod: Int, CaseIterable {
+    case day, week, month, year
+
+    public func start(cal: Calendar, now: Date, rangeStyle: PeriodRangeStyle) -> Date {
+        if rangeStyle == .relative {
+            let today = cal.startOfDay(for: now)
+            switch self {
+            case .day:
+                return today
+            case .week:
+                return cal.date(byAdding: .day, value: -6, to: today) ?? today
+            case .month:
+                return cal.date(byAdding: .day, value: -29, to: today) ?? today
+            case .year:
+                let monthStart = cal.dateInterval(of: .month, for: now)?.start ?? today
+                return cal.date(byAdding: .month, value: -11, to: monthStart) ?? monthStart
+            }
+        }
+
+        let component: Calendar.Component
+        switch self {
+        case .day: return cal.startOfDay(for: now)
+        case .week: component = .weekOfYear
+        case .month: component = .month
+        case .year: component = .year
+        }
+        return cal.dateInterval(of: component, for: now)?.start ?? cal.startOfDay(for: now)
+    }
+
+    public func bucketSpec(start: Date, cal: Calendar, now: Date,
+                           rangeStyle: PeriodRangeStyle) -> BucketSpec {
+        switch self {
+        case .day:
+            return .hours(from: start)
+        case .week:
+            return BucketSpec(count: 7) { d in
+                guard d >= start else { return nil }
+                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
+                return (0..<7).contains(i) ? i : nil
+            }
+        case .month:
+            let count = rangeStyle == .relative
+                ? 30 : (cal.range(of: .day, in: .month, for: now)?.count ?? 31)
+            return BucketSpec(count: count) { d in
+                guard d >= start else { return nil }
+                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
+                return (0..<count).contains(i) ? i : nil
+            }
+        case .year:
+            return BucketSpec(count: 12) { d in
+                guard d >= start else { return nil }
+                let i = cal.dateComponents([.month], from: start, to: d).month ?? -1
+                return (0..<12).contains(i) ? i : nil
+            }
+        }
+    }
+}
+
 // MARK: - Bundled model pricing (USD per MTok)
 
 public struct Rates: Equatable {

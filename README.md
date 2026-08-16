@@ -6,7 +6,7 @@ A macOS menu bar app for local AI usage: spend, input/output tokens, and cache h
   <img src="docs/screenshot.png" width="425" alt="Token Bar panel showing yearly spend, token usage, cache hit rate, a spend graph, and per-model breakdowns">
 </p>
 
-Left-click for day, week, month, or year totals, a spend graph, model breakdowns, and screenshots. Right-click to choose menu bar metrics and panel display options, or quit.
+Left-click for day, week, month, or year totals, a spend graph, model breakdowns, and screenshots. Right-click to choose menu bar metrics, panel display options, and calendar or relative period ranges, or quit.
 
 ## Supported tools
 

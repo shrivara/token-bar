@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.21"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.22"
 
 // Use the bundle identifier for preferences even when Homebrew launches the
 // raw executable (which otherwise writes to token-bar.plist). Preserve settings
@@ -16,8 +16,8 @@ let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? 
 let appDefaults: UserDefaults = {
     let canonical = UserDefaults(suiteName: "com.shrivara.tokenbar") ?? .standard
     let legacy = UserDefaults(suiteName: "token-bar")
-    for key in ["period", "showGraph", "showProviderIcons", "showFullModelNames",
-                "menuBarFields"]
+    for key in ["period", "periodRangeStyle", "showGraph", "showProviderIcons",
+                "showFullModelNames", "menuBarFields"]
         where canonical.object(forKey: key) == nil {
         if let value = legacy?.object(forKey: key) {
             canonical.set(value, forKey: key)
@@ -50,62 +50,56 @@ struct MenuBarFields: OptionSet {
 
 // MARK: - Period switching (D / W / M / Y)
 
-enum Period: Int, CaseIterable {
-    case day, week, month, year
+typealias Period = UsagePeriod
 
+extension UsagePeriod {
     var letter: String { ["D", "W", "M", "Y"][rawValue] }
-    var title: String { ["today", "this week", "this month", "this year"][rawValue] }
     var caption: String { ["spend per hour", "spend per day", "spend per day", "spend per month"][rawValue] }
 
-    func start(cal: Calendar, now: Date) -> Date {
-        let component: Calendar.Component
-        switch self {
-        case .day: return cal.startOfDay(for: now)
-        case .week: component = .weekOfYear
-        case .month: component = .month
-        case .year: component = .year
+    func title(rangeStyle: PeriodRangeStyle) -> String {
+        if rangeStyle == .relative {
+            return ["today", "last 7 days", "last 30 days", "last 12 months"][rawValue]
         }
-        return cal.dateInterval(of: component, for: now)?.start ?? cal.startOfDay(for: now)
-    }
-
-    func bucketSpec(start: Date, cal: Calendar, now: Date) -> BucketSpec {
-        switch self {
-        case .day:
-            return .hours(from: start)
-        case .week:
-            return BucketSpec(count: 7) { d in
-                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
-                return (0..<7).contains(i) ? i : nil
-            }
-        case .month:
-            let n = cal.range(of: .day, in: .month, for: now)?.count ?? 31
-            return BucketSpec(count: n) { d in
-                let i = cal.dateComponents([.day], from: start, to: d).day ?? -1
-                return (0..<n).contains(i) ? i : nil
-            }
-        case .year:
-            return BucketSpec(count: 12) { d in
-                let i = cal.dateComponents([.month], from: start, to: d).month ?? -1
-                return (0..<12).contains(i) ? i : nil
-            }
-        }
+        return ["today", "this week", "this month", "this year"][rawValue]
     }
 
     /// Axis labels as (fraction of width, text)
-    func axis(cal: Calendar, now: Date) -> [(CGFloat, String)] {
+    func axis(cal: Calendar, now: Date, rangeStyle: PeriodRangeStyle) -> [(CGFloat, String)] {
         switch self {
         case .day:
             return [(0, "0"), (0.25, "6"), (0.5, "12"), (0.75, "18"), (1, "24")]
         case .week:
-            let syms = cal.veryShortStandaloneWeekdaySymbols  // Sunday-first
-            let first = cal.firstWeekday - 1
-            return (0..<7).map { ((CGFloat($0) + 0.5) / 7, syms[(first + $0) % 7]) }
+            let start = start(cal: cal, now: now, rangeStyle: rangeStyle)
+            let symbols = cal.veryShortStandaloneWeekdaySymbols
+            return (0..<7).map { index in
+                let date = cal.date(byAdding: .day, value: index, to: start) ?? start
+                let weekday = max(0, cal.component(.weekday, from: date) - 1)
+                let symbol = weekday < symbols.count ? symbols[weekday] : "\(weekday + 1)"
+                return ((CGFloat(index) + 0.5) / 7, symbol)
+            }
+        case .month where rangeStyle == .relative:
+            let start = start(cal: cal, now: now, rangeStyle: rangeStyle)
+            let formatter = DateFormatter()
+            formatter.calendar = cal
+            formatter.locale = cal.locale ?? .current
+            formatter.timeZone = cal.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
+            return [0, 14, 29].map { index in
+                let date = cal.date(byAdding: .day, value: index, to: start) ?? start
+                return ((CGFloat(index) + 0.5) / 30, formatter.string(from: date))
+            }
         case .month:
             let n = CGFloat(cal.range(of: .day, in: .month, for: now)?.count ?? 31)
             return [(0.5 / n, "1"), (14.5 / n, "15"), ((n - 0.5) / n, "\(Int(n))")]
         case .year:
-            let syms = cal.veryShortStandaloneMonthSymbols
-            return (0..<12).map { ((CGFloat($0) + 0.5) / 12, String(syms[$0].prefix(1))) }
+            let start = start(cal: cal, now: now, rangeStyle: rangeStyle)
+            let symbols = cal.veryShortStandaloneMonthSymbols
+            return (0..<12).map { index in
+                let date = cal.date(byAdding: .month, value: index, to: start) ?? start
+                let month = max(0, cal.component(.month, from: date) - 1)
+                let symbol = month < symbols.count ? symbols[month] : "\(month + 1)"
+                return ((CGFloat(index) + 0.5) / 12, String(symbol.prefix(1)))
+            }
         }
     }
 }
@@ -745,7 +739,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
     var menuSignature = ""
-    var latestPanelData: (period: Period, total: Agg, sources: [SourceStats])?
+    var latestPanelData: (period: Period, rangeStyle: PeriodRangeStyle,
+                          total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
     fileprivate var savedCatMotionState: CatMotionState?
     var panelView: NSStackView?
@@ -753,6 +748,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var periodButtons: [NSButton] = []
     var screenshotButton: NSButton?
     var period: Period = Period(rawValue: appDefaults.integer(forKey: "period")) ?? .day
+    var periodRangeStyle = PeriodRangeStyle(
+        rawValue: appDefaults.integer(forKey: "periodRangeStyle")) ?? .calendar
 
     // Left-click shows this info panel; right-click shows the View menu below.
     let panelMenu = NSMenu()
@@ -776,7 +773,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // of the selected period.
     func headerTitle(for s: SourceStats) -> String {
         guard period != .day, let since = s.dataSince,
-              since > period.start(cal: Calendar.current, now: Date()).addingTimeInterval(86_400)
+              since > period.start(cal: Calendar.current, now: Date(),
+                                   rangeStyle: periodRangeStyle).addingTimeInterval(86_400)
         else { return s.name.uppercased() }
         let f = DateFormatter()
         f.dateFormat = "MMM d"
@@ -823,8 +821,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let cal = Calendar.current, now = Date()
-            let start = Period.year.start(cal: cal, now: now)
-            let spec = Period.year.bucketSpec(start: start, cal: cal, now: now)
+            let rangeStyle = self.periodRangeStyle
+            let start = Period.year.start(cal: cal, now: now, rangeStyle: rangeStyle)
+            let spec = Period.year.bucketSpec(start: start, cal: cal, now: now,
+                                              rangeStyle: rangeStyle)
             _ = self.scanAll(since: start, buckets: spec)
         }
     }
@@ -962,6 +962,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          showExperimentalCat, #selector(toggleExperimentalCat))
         cat.toolTip = "Appears on the spend graph."
 
+        let periodRangeMenu = submenu("Period Range")
+        let calendarRange = toggle(in: periodRangeMenu, "Calendar",
+                                   periodRangeStyle == .calendar, #selector(useCalendarRange))
+        calendarRange.toolTip = "This week, this month, and this year."
+        let relativeRange = toggle(in: periodRangeMenu, "Relative",
+                                   periodRangeStyle == .relative, #selector(useRelativeRange))
+        relativeRange.toolTip = "Last 7 days, last 30 days, and last 12 months."
+
         menu.addItem(.separator())
         // Disabled version label helps identify the running build.
         let version = NSMenuItem(title: "Token Bar v\(appVersion)", action: nil, keyEquivalent: "")
@@ -979,7 +987,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applyViewChange(_ key: String, _ value: Bool) {
         appDefaults.set(value, forKey: key)
         menuSignature = ""
-        if let data = latestPanelData, data.period == period {
+        if let data = latestPanelData, data.period == period,
+           data.rangeStyle == periodRangeStyle {
             rebuildMenu(total: data.total, sources: data.sources)
         } else {
             refresh()
@@ -1001,6 +1010,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleMenuBarInputTokens() { toggleMenuBarField(.inputTokens) }
     @objc func toggleMenuBarOutputTokens() { toggleMenuBarField(.outputTokens) }
     @objc func toggleMenuBarCacheHitRate() { toggleMenuBarField(.cacheHitRate) }
+
+    func setPeriodRangeStyle(_ rangeStyle: PeriodRangeStyle) {
+        guard periodRangeStyle != rangeStyle else { return }
+        periodRangeStyle = rangeStyle
+        appDefaults.set(rangeStyle.rawValue, forKey: "periodRangeStyle")
+        refresh()
+    }
+
+    @objc func useCalendarRange() { setPeriodRangeStyle(.calendar) }
+    @objc func useRelativeRange() { setPeriodRangeStyle(.relative) }
 
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
     @objc func toggleExperimentalCat() {
@@ -1113,8 +1132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cal = Calendar.current
         let now = Date()
         let period = self.period
-        let periodStart = period.start(cal: cal, now: now)
-        let spec = period.bucketSpec(start: periodStart, cal: cal, now: now)
+        let rangeStyle = periodRangeStyle
+        let periodStart = period.start(cal: cal, now: now, rangeStyle: rangeStyle)
+        let spec = period.bucketSpec(start: periodStart, cal: cal, now: now,
+                                     rangeStyle: rangeStyle)
 
         scanQueue.async { [weak self] in
             guard let self = self else { return }
@@ -1122,10 +1143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var total = Agg()
             for s in sources { total.add(s.agg) }
             self.performOnMain {
-                // A period can change while its previous scan is in flight.
-                // Never render stale rows under the newly selected period.
-                if period == self.period {
-                    self.latestPanelData = (period, total, sources)
+                // A period or range style can change while its previous scan
+                // is in flight. Never render stale rows under the new selection.
+                if period == self.period, rangeStyle == self.periodRangeStyle {
+                    self.latestPanelData = (period, rangeStyle, total, sources)
                     self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                                   output: total.output, hit: total.hitRate))
                     self.rebuildMenu(total: total, sources: sources)
@@ -1263,9 +1284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updatePeriodControls() {
-        periodField?.stringValue = period.title
+        periodField?.stringValue = period.title(rangeStyle: periodRangeStyle)
         for button in periodButtons {
             guard let buttonPeriod = Period(rawValue: button.tag) else { continue }
+            let title = buttonPeriod.title(rangeStyle: periodRangeStyle)
+            button.toolTip = "Show \(title)"
+            button.setAccessibilityLabel("Show \(title)")
             button.attributedTitle = NSAttributedString(
                 string: buttonPeriod.letter,
                 attributes: [
@@ -1284,7 +1308,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for s in active { setField("\(s.name)/Header", headerTitle(for: s)) }
         sparkView?.values = totalBuckets(active)
         sparkView?.caption = period.caption
-        sparkView?.axis = period.axis(cal: Calendar.current, now: Date())
+        sparkView?.axis = period.axis(cal: Calendar.current, now: Date(),
+                                      rangeStyle: periodRangeStyle)
         for s in active {
             for (model, a) in s.perModel {
                 let marker = s.unknownPricing.contains(model) ? "~" : ""
@@ -1358,7 +1383,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
-        let periodLabel = label(nil, period.title, size: 12, color: .secondaryLabelColor)
+        let periodLabel = label(nil, period.title(rangeStyle: periodRangeStyle), size: 12,
+                                color: .secondaryLabelColor)
         periodField = periodLabel
 
         let switcher = NSStackView()
@@ -1368,8 +1394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let b = NSButton(title: p.letter, target: self, action: #selector(periodClicked(_:)))
             b.isBordered = false
             b.tag = p.rawValue
-            b.toolTip = "Show \(p.title)"
-            b.setAccessibilityLabel("Show \(p.title)")
+            let title = p.title(rangeStyle: periodRangeStyle)
+            b.toolTip = "Show \(title)"
+            b.setAccessibilityLabel("Show \(title)")
             b.attributedTitle = NSAttributedString(
                 string: p.letter,
                 attributes: [
@@ -1431,7 +1458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let spark = SparkBarView()
             spark.values = totalBuckets(active)
             spark.caption = period.caption
-            spark.axis = period.axis(cal: cal, now: Date())
+            spark.axis = period.axis(cal: cal, now: Date(), rangeStyle: periodRangeStyle)
             spark.catEnabled = showExperimentalCat
             if let savedCatMotionState { spark.restoreMotionState(savedCatMotionState) }
             spark.catAnimating = showExperimentalCat && menuIsOpen
