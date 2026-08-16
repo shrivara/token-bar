@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.20"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.21"
 
 // Use the bundle identifier for preferences even when Homebrew launches the
 // raw executable (which otherwise writes to token-bar.plist). Preserve settings
@@ -951,13 +951,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarToggle("Output Tokens", .outputTokens, #selector(toggleMenuBarOutputTokens))
         menuBarToggle("Cache Hit Rate", .cacheHitRate, #selector(toggleMenuBarCacheHitRate))
 
-        let panelDisplayMenu = submenu("Panel Display")
-        toggle(in: panelDisplayMenu, "Spend Graph", showGraph, #selector(toggleGraph))
-        toggle(in: panelDisplayMenu, "Provider Icons", showProviderIcons,
+        let showInPanelMenu = submenu("Show in Panel")
+        toggle(in: showInPanelMenu, "Spend Graph", showGraph, #selector(toggleGraph))
+        toggle(in: showInPanelMenu, "Provider Icons", showProviderIcons,
                #selector(toggleProviderIcons))
-        toggle(in: panelDisplayMenu, "Full Model Names", showFullModelNames,
+        toggle(in: showInPanelMenu, "Full Model Names", showFullModelNames,
                #selector(toggleFullModelNames))
-        let cat = toggle(in: panelDisplayMenu, "Animated Cat (Experimental)",
+        showInPanelMenu.addItem(.sectionHeader(title: "Experimental"))
+        let cat = toggle(in: showInPanelMenu, "Animated Cat",
                          showExperimentalCat, #selector(toggleExperimentalCat))
         cat.toolTip = "Appears on the spend graph."
 
