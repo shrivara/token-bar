@@ -1,0 +1,67 @@
+name: Harness integrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/harness-integration.yml"
+      - "Package.swift"
+      - "Sources/TokenBarCore/TokenBarCore.swift"
+      - "Tests/**"
+      - "Scripts/test-harness-integration.sh"
+  pull_request:
+    paths:
+      - ".github/workflows/harness-integration.yml"
+      - "Package.swift"
+      - "Sources/TokenBarCore/TokenBarCore.swift"
+      - "Tests/**"
+      - "Scripts/test-harness-integration.sh"
+  schedule:
+    # Detect upstream storage-format changes even when this repo is idle.
+    - cron: "43 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-integrations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-harnesses:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install latest harness CLIs
+        id: install
+        run: |
+          npm install --prefix "$RUNNER_TEMP/harnesses" --no-audit --no-fund \
+            @anthropic-ai/claude-code@latest \
+            @earendil-works/pi-coding-agent@latest \
+            @openai/codex@latest \
+            opencode-ai@latest
+      - name: Test Claude Code session contract
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          CLAUDE_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/claude
+        run: ./Scripts/test-harness-integration.sh claude-code
+      - name: Test Codex session contract
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          CODEX_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/codex
+        run: ./Scripts/test-harness-integration.sh codex
+      - name: Test OpenCode database contract
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          OPENCODE_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/opencode
+        run: ./Scripts/test-harness-integration.sh opencode
+      - name: Test pi session contract
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          PI_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/pi
+        run: ./Scripts/test-harness-integration.sh pi

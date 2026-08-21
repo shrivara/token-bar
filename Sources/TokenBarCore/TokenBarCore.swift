@@ -433,7 +433,7 @@ struct ClaudeEntry {
 }
 struct CodexEntry {
     let model: String
-    let input, cacheRead, outputTotal, reasoning: Double
+    let input, cacheRead, cacheWrite, outputTotal, reasoning: Double
     let date: Date
 }
 struct PiEntry {
@@ -564,17 +564,24 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
                     usage = last
                 } else {
                     var delta: [String: Any] = [:]
-                    for key in ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"] {
+                    for key in ["input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                                "output_tokens", "reasoning_output_tokens"] {
                         delta[key] = max(0, num(total[key]) - num(previousTotal?[key]))
                     }
                     usage = delta
                 }
                 previousTotal = total
 
-                let cacheRead = num(usage["cached_input_tokens"])
+                // Codex's cache read/write counters are slices of input_tokens.
+                // Split them into mutually exclusive lanes for display and pricing.
+                let inputTotal = max(0, num(usage["input_tokens"]))
+                let cacheRead = min(inputTotal, max(0, num(usage["cached_input_tokens"])))
+                let cacheWrite = min(inputTotal - cacheRead,
+                                     max(0, num(usage["cache_write_input_tokens"])))
                 out.append(CodexEntry(model: model,
-                                      input: max(0, num(usage["input_tokens"]) - cacheRead),
+                                      input: inputTotal - cacheRead - cacheWrite,
                                       cacheRead: cacheRead,
+                                      cacheWrite: cacheWrite,
                                       outputTotal: num(usage["output_tokens"]),
                                       reasoning: num(usage["reasoning_output_tokens"]),
                                       date: date))
@@ -588,9 +595,10 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
             var a = s.perModel[key] ?? Agg()
             a.input += e.input
             a.cacheRead += e.cacheRead
+            a.cacheWrite5m += e.cacheWrite
             a.output += e.outputTotal
             let catalogCost = catalogPrice(PricedUsage(input: e.input, output: output, reasoning: e.reasoning,
-                                                       cacheRead: e.cacheRead, cacheWrite: 0),
+                                                       cacheRead: e.cacheRead, cacheWrite: e.cacheWrite),
                                            provider: "openai", model: e.model, catalog: catalog)
             let cost = catalogCost?.value ?? 0
             a.cost += cost
