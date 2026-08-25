@@ -8,7 +8,7 @@ import TokenBarCore
 // Shown in the right-click menu for debugging which build is running. The .app
 // reports its Info.plist version; the raw CLI/Homebrew binary has no Info.plist,
 // so fall back to this constant (bump it alongside build.sh on release).
-let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.31"
+let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.8.32"
 
 // Use the bundle identifier for preferences even when Homebrew launches the
 // raw executable (which otherwise writes to token-bar.plist). Preserve settings
