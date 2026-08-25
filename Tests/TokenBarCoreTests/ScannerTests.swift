@@ -305,6 +305,17 @@ final class CodexScannerTests: FixtureTestCase {
         return String(data: try! JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
     }
 
+    func request(model: String, input: Int = 0, output: Int = 1_000_000) -> [String] {
+        let usage = ["input_tokens": input, "cached_input_tokens": 0,
+                     "output_tokens": output, "reasoning_output_tokens": 0]
+        return [
+            line(ts: inRange, type: "turn_context", payload: ["model": model]),
+            line(ts: inRange, type: "event_msg", payload: ["type": "token_count", "info": [
+                "total_token_usage": usage, "last_token_usage": usage,
+            ]]),
+        ]
+    }
+
     func testAggregatesRequestDeltasAndSeparatesCacheAndReasoningTokens() throws {
         let catalogJSON = """
         {"providers":{"openai":{"models":{"gpt-test":{"input":2,"output":10,"reasoning":20,"cache_read":0.2,"cache_write":4}}}}}
@@ -350,6 +361,63 @@ final class CodexScannerTests: FixtureTestCase {
         XCTAssertEqual(s.agg.cacheRead, 9)
         XCTAssertEqual(s.agg.cacheWrite, 5)
         XCTAssertEqual(s.agg.output, 5)
+    }
+
+    func testNamespacedModelsFallBackToCanonicalSuffixAndAreMarkedApproximate() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"gpt-5.6-sol":{"input":5,"output":30},"gpt-5.6-terra":{"input":2,"output":12}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let sol = "openai/global.openai.gpt-5.6-sol"
+        let terra = "openai/global.openai.gpt-5.6-terra"
+        try write(request(model: sol) + request(model: terra), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        let solKey = "openai/\(sol)"
+        let terraKey = "openai/\(terra)"
+        XCTAssertEqual(s.perModel[solKey]?.cost ?? -1, 30, accuracy: 1e-9)
+        XCTAssertEqual(s.perModel[terraKey]?.cost ?? -1, 12, accuracy: 1e-9)
+        XCTAssertEqual(s.agg.cost, 42, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, Set([solKey, terraKey]))
+    }
+
+    func testExactModelMatchWinsOverItsStrippedSuffix() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"openai/global.openai.gpt-exact":{"input":1,"output":7},"gpt-exact":{"input":1,"output":99}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let model = "openai/global.openai.gpt-exact"
+        try write(request(model: model), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 7, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
+    func testModelFallbackUsesLongestAvailableSuffix() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"global.openai.gpt-test":{"input":1,"output":7},"gpt-test":{"input":1,"output":99}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let model = "router/global.openai.gpt-test"
+        try write(request(model: model), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 7, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, ["openai/\(model)"])
+    }
+
+    func testModelFallbackDoesNotSearchUnrelatedProviders() throws {
+        let catalogJSON = """
+        {"providers":{"amazon-bedrock":{"models":{"gpt-test":{"input":1,"output":99}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let model = "router/global.openai.gpt-test"
+        try write(request(model: model), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 0, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, ["openai/\(model)"])
     }
 
     func testMissingRootIsUnavailable() {
@@ -426,13 +494,32 @@ final class PiScannerTests: FixtureTestCase {
         {"providers":{"anthropic":{"models":{"claude-test":{"input":2,"output":10}}}}}
         """
         let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
-        let line = entry(ts: inRange, provider: "anthropic-custom/plan", model: "claude-test",
-                         input: 1_000_000, output: 1_000_000)
-        try write([line], to: "--proj--/s1.jsonl")
+        let providers = ["anthropic-custom/plan", "anthropic_custom", "anthropic/plan"]
+        try write(providers.map {
+            entry(ts: inRange, provider: $0, model: "claude-test",
+                  input: 1_000_000, output: 1_000_000)
+        }, to: "--proj--/s1.jsonl")
+
+        let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 36, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, Set(providers.map { "\($0)/claude-test" }))
+    }
+
+    func testQualifiedProviderAndNamespacedModelFallbacksCompose() throws {
+        let json = """
+        {"providers":{"anthropic":{"models":{"claude-test":{"input":2,"output":10}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        let provider = "anthropic-custom/plan"
+        let model = "gateway/v1.anthropic.claude-test"
+        try write([
+            entry(ts: inRange, provider: provider, model: model,
+                  input: 1_000_000, output: 1_000_000),
+        ], to: "--proj--/s1.jsonl")
 
         let s = scanPi(since: dayStart, root: tmp, catalog: catalog)
         XCTAssertEqual(s.agg.cost, 12, accuracy: 1e-9)
-        XCTAssertEqual(s.unknownPricing, ["anthropic-custom/plan/claude-test"])
+        XCTAssertEqual(s.unknownPricing, ["\(provider)/\(model)"])
     }
 
     func testBedrockMantleUsesAmazonBedrockCatalogPrices() throws {

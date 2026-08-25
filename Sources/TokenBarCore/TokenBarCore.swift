@@ -257,30 +257,58 @@ private func modelKey(provider: String, model: String) -> String {
 
 private struct CatalogCost {
     let value: Double
-    /// True when the provider name did not exactly match the catalog entry.
+    /// True when either identifier needed a catalog fallback.
     let approximate: Bool
 }
 
-private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
-                          catalog: PricingCatalog?) -> CatalogCost? {
-    guard let catalog else { return nil }
-    let provider = providerID(provider)
-
-    // Preserve an exact match when one is available. Provider integrations
-    // commonly qualify a catalog provider (for example, `openai-codex`), so
-    // then progressively remove trailing `-`, `_`, or `/` components and use
-    // the first catalog provider that has this model.
+/// Provider integrations commonly append qualifiers such as `-custom` or
+/// `/plan`. Keep the complete id first, then remove qualifiers from right to
+/// left so the closest catalog provider always wins.
+private func providerCandidates(_ provider: String) -> [String] {
     var candidates = [provider]
     var base = provider
     while let separator = base.lastIndex(where: { "-_/".contains($0) }) {
         base = String(base[..<separator])
         if !base.isEmpty { candidates.append(base) }
     }
-    for (index, candidate) in candidates.enumerated() {
-        guard let pricedModel = catalog.model(provider: candidate, id: model),
-              let value = price(usage, model: pricedModel)
-        else { continue }
-        return CatalogCost(value: value, approximate: index > 0)
+    return candidates
+}
+
+/// Gateways can prepend routing namespaces to model ids. Keep the complete id
+/// first, then expose progressively shorter suffixes at namespace boundaries.
+/// Catalog lookup makes this generic: no provider or model prefix is assumed.
+private func modelCandidates(_ model: String) -> [String] {
+    var candidates = [model]
+    for separator in model.indices where "/.".contains(model[separator]) {
+        let start = model.index(after: separator)
+        guard start < model.endIndex else { continue }
+        let candidate = String(model[start...])
+        if !candidates.contains(candidate) { candidates.append(candidate) }
+    }
+    return candidates
+}
+
+private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
+                          catalog: PricingCatalog?) -> CatalogCost? {
+    guard let catalog else { return nil }
+    let providers = providerCandidates(providerID(provider))
+    let models = modelCandidates(model)
+
+    // Resolution order is exact-first and deterministic:
+    // 1. The normalized provider and complete model id.
+    // 2. The complete model id under progressively less-qualified providers.
+    // 3. Progressively shorter model suffixes (longest first), checking the
+    //    same provider sequence for each suffix.
+    // Resolution never searches unrelated providers. Any non-first candidate
+    // is an estimate and is therefore displayed with `~`.
+    for (modelIndex, modelCandidate) in models.enumerated() {
+        for (providerIndex, providerCandidate) in providers.enumerated() {
+            guard let pricedModel = catalog.model(provider: providerCandidate, id: modelCandidate),
+                  let value = price(usage, model: pricedModel)
+            else { continue }
+            return CatalogCost(value: value,
+                               approximate: providerIndex > 0 || modelIndex > 0)
+        }
     }
     return nil
 }

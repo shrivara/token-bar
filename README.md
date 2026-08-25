@@ -39,7 +39,7 @@ brew services restart token-bar
 ## Notes
 
 - Spend is API-equivalent pricing, not your subscription bill.
-- Rates come from a bundled [models.dev](https://models.dev/) snapshot. Unknown prices contribute $0 and are marked `~`.
+- Rates come from a bundled [models.dev](https://models.dev/) snapshot. Qualified-provider or namespaced-model matches are estimates marked `~`; unresolved prices contribute `$0` and are also marked `~`.
 - Everything stays local: no network access or telemetry.
 
 ## License
