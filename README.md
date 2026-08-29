@@ -6,7 +6,7 @@ A macOS menu bar app for local AI usage: spend, input/output tokens, and cache h
   <img src="docs/screenshot.png" width="425" alt="Token Bar panel showing yearly spend, token usage, cache hit rate, a spend graph, and per-model breakdowns">
 </p>
 
-Left-click for day, week, month, or year totals, a spend graph, model breakdowns, and screenshots. Right-click to choose menu bar metrics, panel display options, a color theme, and calendar or relative period ranges, or quit.
+Left-click opens a transient, scrollable dashboard popover with day, week, month, or year totals, a spend graph, model breakdowns, and screenshots. Right-click keeps a native command menu for menu bar metrics, panel display options, color themes, calendar or relative period ranges, and quit.
 
 System follows the macOS appearance. Built-in dark themes include Catppuccin Mocha, Dracula, Gruvbox Dark, Nord, Solarized Dark, and Tokyo Night; light themes include Catppuccin Latte, GitHub Light, Gruvbox Light, and Solarized Light.
 

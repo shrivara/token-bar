@@ -210,9 +210,9 @@ enum PanelTheme: String, CaseIterable {
         }
     }
 
-    // Match the surrounding native menu chrome to each fixed palette while
-    // System continues to inherit the current macOS appearance.
-    var menuAppearance: NSAppearance? {
+    // Match the popover's native chrome to each fixed palette while System
+    // continues to inherit the current macOS appearance.
+    var chromeAppearance: NSAppearance? {
         guard self != .system else { return nil }
         return NSAppearance(named: isLight ? .aqua : .darkAqua)
     }
@@ -275,50 +275,42 @@ final class ThemedPanelView: NSStackView {
     }
 }
 
-// NSMenu reserves a few native-background pixels above and below a custom item.
-// This noninteractive overlay paints only those margins, leaving the panel and
-// its controls untouched while making the palette reach the menu's outer edge.
-final class ThemedMenuChromeView: NSView {
-    weak var panelView: ThemedPanelView?
-    var theme: PanelTheme = .system
+// NSPopover permits normal cursor tracking (unlike NSMenu). Keep the standard
+// cursor rectangle and reassert it during movement because the popover's native
+// chrome can restore the arrow after the initial enter event.
+final class PointingHandButton: NSButton {
+    private var handTrackingArea: NSTrackingArea?
 
-    override var isOpaque: Bool { false }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsDisplay = true
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard isEnabled else { return }
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard theme != .system, let panelView,
-              panelView.window === window else { return }
-        let colors = theme.palette
-        colors.background.setFill()
-        let panelRect = panelView.convert(panelView.bounds, to: self).intersection(bounds)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let handTrackingArea { removeTrackingArea(handTrackingArea) }
+        handTrackingArea = nil
+        guard isEnabled else { return }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(area)
+        handTrackingArea = area
+    }
 
-        func fill(_ rect: NSRect) {
-            guard !rect.isNull, rect.width > 0, rect.height > 0 else { return }
-            NSBezierPath(rect: rect).fill()
-        }
-        if panelRect.isNull {
-            fill(bounds)
-        } else {
-            fill(NSRect(x: bounds.minX, y: bounds.minY,
-                        width: bounds.width, height: panelRect.minY - bounds.minY))
-            fill(NSRect(x: bounds.minX, y: panelRect.maxY,
-                        width: bounds.width, height: bounds.maxY - panelRect.maxY))
-            fill(NSRect(x: bounds.minX, y: panelRect.minY,
-                        width: panelRect.minX - bounds.minX, height: panelRect.height))
-            fill(NSRect(x: panelRect.maxX, y: panelRect.minY,
-                        width: bounds.maxX - panelRect.maxX, height: panelRect.height))
-        }
+    override func mouseEntered(with event: NSEvent) {
+        if isEnabled { NSCursor.pointingHand.set() }
+    }
 
-        colors.border.withAlphaComponent(0.75).setStroke()
-        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                  xRadius: 11.5, yRadius: 11.5)
-        border.lineWidth = 1
-        border.stroke()
+    override func mouseMoved(with event: NSEvent) {
+        if isEnabled { NSCursor.pointingHand.set() }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.arrow.set()
     }
 }
 
@@ -414,7 +406,7 @@ private final class LaserOverlayView: NSView {
         guard laserVisible, origins.count == endpoints.count else { return }
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
-        // Match the rounded menu panel so no beam appears beyond its box.
+        // Match the rounded dashboard so no beam appears beyond its box.
         NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).addClip()
         for index in origins.indices {
             let beam = NSBezierPath()
@@ -940,7 +932,7 @@ final class SparkBarView: NSView {
         }
 
         // Hold each random direction for a few display frames. Rays now stop at
-        // the menu panel instead of extending across the display.
+        // the dashboard instead of extending across the display.
         let flash = Int(floor(now * 12))
         overlay.laserVisible = !flash.isMultiple(of: 4)
         func randomUnit(_ salt: Double) -> CGFloat {
@@ -1062,7 +1054,7 @@ struct SessionLaunchTarget {
     let projectPath: String?
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
     var eventStream: FSEventStreamRef?
@@ -1071,13 +1063,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
     var sessionLaunchTargets: [String: SessionLaunchTarget] = [:]
-    var menuSignature = ""
+    var panelSignature = ""
     var latestPanelData: (period: Period, rangeStyle: PeriodRangeStyle,
                           total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
     fileprivate var savedCatMotionState: CatMotionState?
+    let panelPopover = NSPopover()
     var panelView: ThemedPanelView?
-    var panelChromeView: ThemedMenuChromeView?
+    var panelScrollView: NSScrollView?
     var periodField: NSTextField?
     var periodButtons: [NSButton] = []
     var screenshotButton: NSButton?
@@ -1085,8 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var periodRangeStyle = PeriodRangeStyle(
         rawValue: appDefaults.integer(forKey: "periodRangeStyle")) ?? .calendar
 
-    // Left-click shows this info panel; right-click shows the View menu below.
-    let panelMenu = NSMenu()
+    // Left-click shows the dashboard popover; right-click shows the View menu.
 
     // View preferences (right-click menu). object(forKey:) distinguishes an
     // unset default (nil) from an explicit false, so first launch keeps the
@@ -1135,8 +1127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        observeMenuTracking(panelMenu)
-        // Handle clicks ourselves so left and right can open different menus;
+        panelPopover.behavior = .transient
+        panelPopover.animates = true
+        panelPopover.delegate = self
+        panelPopover.appearance = panelTheme.chromeAppearance
+        ensurePanelSkeleton()
+        buildPanelContent(total: Agg(), active: [])
+        // Handle clicks ourselves so left and right can open different surfaces;
         // a status item with a static .menu can't tell them apart.
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusItemClicked)
@@ -1202,82 +1199,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    var menuIsOpen = false
+    var panelIsOpen = false
     var pendingBar: BarValues?
 
-    func installPanelMenuChrome() {
-        guard menuIsOpen, panelTheme != .system, let panel = panelView,
-              let contentView = panel.window?.contentView,
-              contentView !== panel else {
-            removePanelMenuChrome()
-            return
-        }
-
-        let chrome: ThemedMenuChromeView
-        if let existing = panelChromeView, existing.superview === contentView {
-            chrome = existing
-        } else {
-            panelChromeView?.removeFromSuperview()
-            chrome = ThemedMenuChromeView(frame: contentView.bounds)
-            chrome.autoresizingMask = [.width, .height]
-            contentView.addSubview(chrome, positioned: .above, relativeTo: nil)
-            panelChromeView = chrome
-        }
-        chrome.panelView = panel
-        chrome.theme = panelTheme
-        chrome.needsDisplay = true
+    // The status title is allowed to keep updating in the popover itself, but
+    // its menu-bar representation is deferred while anchored. Changing the
+    // button width would otherwise move the popover sideways during a refresh.
+    func popoverWillShow(_ notification: Notification) {
+        panelIsOpen = true
+        statusItem.button?.highlight(true)
+        sparkView?.catAnimating = showExperimentalCat
+        refresh()
     }
 
-    func removePanelMenuChrome() {
-        panelChromeView?.removeFromSuperview()
-        panelChromeView = nil
-    }
-
-    // Bar updates are deferred while the menu is open: resizing the status
-    // item moves the menu's anchor, so the whole panel would jump sideways
-    // on every period switch. The panel shows the live numbers meanwhile.
-    // Open state comes from NSMenu's tracking notifications, which fire for
-    // every way a menu can open/close (click-away, Esc, app switch) - the
-    // delegate's menuDidClose can be missed, leaving the bar frozen.
-    func observeMenuTracking(_ menu: NSMenu) {
-        // queue: nil delivers synchronously on the posting (main) thread;
-        // .main would enqueue onto the stalled-during-tracking main queue
-        NotificationCenter.default.addObserver(
-            forName: NSMenu.didBeginTrackingNotification, object: menu, queue: nil
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            self.menuIsOpen = true
-            self.installPanelMenuChrome()
-            if self.panelChromeView == nil {
-                self.performOnMain { [weak self] in self?.installPanelMenuChrome() }
-            }
-            self.sparkView?.catAnimating = self.showExperimentalCat
-            self.refresh()
-        }
-        NotificationCenter.default.addObserver(
-            forName: NSMenu.didEndTrackingNotification, object: menu, queue: nil
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            self.menuIsOpen = false
-            self.removePanelMenuChrome()
-            self.sparkView?.catAnimating = false
-            if let target = self.pendingBar {
-                self.pendingBar = nil
-                self.animateBar(to: target)
-            }
+    func popoverDidClose(_ notification: Notification) {
+        panelIsOpen = false
+        statusItem.button?.highlight(false)
+        sparkView?.catAnimating = false
+        if let target = pendingBar {
+            pendingBar = nil
+            animateBar(to: target)
         }
     }
 
-    // Left-click (or the panel) opens the readout; right-click / control-click
-    // opens the View menu. The performClick idiom pops the menu with the usual
-    // button highlight, then we clear .menu so the next click routes here again.
+    func scrollPanelToTop() {
+        guard let panel = panelView, let scrollView = panelScrollView else { return }
+        let revealHeader = { [weak panel, weak scrollView] in
+            guard let panel, let scrollView,
+                  let header = panel.arrangedSubviews.first else { return }
+            panel.layoutSubtreeIfNeeded()
+            scrollView.layoutSubtreeIfNeeded()
+            header.scrollToVisible(header.bounds)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        revealHeader()
+        // A content-size change lays out the popover window on the next pass;
+        // reveal it again after the clip view has adopted its final height.
+        performOnMain(revealHeader)
+    }
+
+    func showPanel() {
+        guard let button = statusItem.button else { return }
+        ensurePanelSkeleton()
+        resizePanel()
+        panelPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        scrollPanelToTop()
+    }
+
+    // Left-click toggles the dashboard popover; right-click / control-click
+    // retains a native command menu. The performClick idiom gives that menu its
+    // usual status-button highlight, then .menu is cleared for the next click.
     @objc func statusItemClicked() {
         let event = NSApp.currentEvent
         let wantsViewMenu = event?.type == .rightMouseUp
             || (event?.modifierFlags.contains(.control) ?? false)
-        statusItem.menu = wantsViewMenu ? makeViewMenu() : panelMenu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil
+        if wantsViewMenu {
+            if panelPopover.isShown { panelPopover.performClose(nil) }
+            statusItem.menu = makeViewMenu()
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+        } else if panelPopover.isShown {
+            panelPopover.performClose(nil)
+        } else {
+            showPanel()
+        }
     }
 
     func makeViewMenu() -> NSMenu {
@@ -1379,10 +1364,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // first and then visibly resize when that scan completed.
     func applyViewChange(_ key: String, _ value: Bool) {
         appDefaults.set(value, forKey: key)
-        menuSignature = ""
+        panelSignature = ""
         if let data = latestPanelData, data.period == period,
            data.rangeStyle == periodRangeStyle {
-            rebuildMenu(total: data.total, sources: data.sources)
+            rebuildPanel(total: data.total, sources: data.sources)
         } else {
             refresh()
         }
@@ -1395,12 +1380,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { return }
         panelTheme = selectedTheme
         appDefaults.set(selectedTheme.rawValue, forKey: "theme")
-        panelMenu.appearance = selectedTheme.menuAppearance
+        panelPopover.appearance = selectedTheme.chromeAppearance
+        panelView?.appearance = selectedTheme.chromeAppearance
         panelView?.theme = selectedTheme
-        menuSignature = ""
+        panelSignature = ""
         if let data = latestPanelData, data.period == period,
            data.rangeStyle == periodRangeStyle {
-            rebuildMenu(total: data.total, sources: data.sources)
+            rebuildPanel(total: data.total, sources: data.sources)
         } else {
             refresh()
         }
@@ -1566,7 +1552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.latestPanelData = (period, rangeStyle, total, sources)
                     self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                                   output: total.output, hit: total.hitRate))
-                    self.rebuildMenu(total: total, sources: sources)
+                    self.rebuildPanel(total: total, sources: sources)
                 }
                 self.scanning = false
                 if self.scanPending {
@@ -1598,7 +1584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Roll the bar through intermediate values (ease-out, ~0.8s)
     func animateBar(to target: BarValues) {
-        if menuIsOpen {
+        if panelIsOpen {
             pendingBar = target
             return
         }
@@ -1822,12 +1808,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Rebuild the panel only when its row structure changes (a new model or
     // source); otherwise update fields and period controls in place: no flicker.
-    func rebuildMenu(total: Agg, sources: [SourceStats]) {
-        ensureMenuSkeleton()
+    func rebuildPanel(total: Agg, sources: [SourceStats]) {
+        ensurePanelSkeleton()
         let active = activeSources(sources)
         // Structure and presentation—not live ordering or period—determine
         // whether the panel needs rebuilding. Recreating every view on a period
-        // switch caused a visible flash and let the menu recalculate its position.
+        // switch caused a visible flash and let the popover recalculate its position.
         let sourceSignature = active
             .map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
             .sorted()
@@ -1857,11 +1843,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          sourceSignature,
                          attributionSignature]
             .joined(separator: "|")
-        if signature == menuSignature && !statFields.isEmpty {
+        if signature == panelSignature && !statFields.isEmpty {
             updateFields(total: total, active: active)
         } else {
             buildPanelContent(total: total, active: active)
-            menuSignature = signature
+            panelSignature = signature
         }
     }
 
@@ -1871,28 +1857,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Panel width is sticky: it grows to fit the widest content seen but never
-    // shrinks back, so changing values cannot move the menu's anchored edge.
+    // shrinks back, so changing values cannot move the popover's anchored edge.
     // The insets are already included in NSStackView.fittingSize; adding them on
     // every refresh made the panel grow a little each time.
     var stickyWidth: CGFloat = 360
     // Width needed by the current table with full names and icons enabled.
-    // Reserving this up front keeps view toggles from resizing the menu.
+    // Reserving this up front keeps view toggles from resizing the popover.
     var minimumContentWidth: CGFloat = 0
+
+    func maximumPanelHeight() -> CGFloat {
+        guard let button = statusItem?.button, let window = button.window,
+              let screen = window.screen ?? NSScreen.main
+        else { return 640 }
+        let windowRect = button.convert(button.bounds, to: nil)
+        let screenRect = window.convertToScreen(windowRect)
+        let availableBelow = screenRect.minY - screen.visibleFrame.minY - 12
+        return max(220, min(720, floor(availableBelow)))
+    }
 
     func resizePanel() {
         guard let panel = panelView else { return }
         panel.layoutSubtreeIfNeeded()
         let fitting = panel.fittingSize
-        // NSStackView's fitting width only accounts for its leading inset in
-        // this menu-hosted configuration. Measure the content explicitly so
-        // the table gets the same trailing inset as the header and graph.
+        // Measure the content explicitly so the table gets the same trailing
+        // inset as the header and graph.
         let measuredWidth = panel.arrangedSubviews.map { $0.fittingSize.width }.max() ?? 0
         let contentWidth = max(measuredWidth, minimumContentWidth)
         let insetWidth = panel.edgeInsets.left + panel.edgeInsets.right
         stickyWidth = max(stickyWidth, ceil(contentWidth + insetWidth))
-        let size = NSSize(width: stickyWidth, height: ceil(fitting.height))
-        if size != panel.frame.size { panel.setFrameSize(size) }
-        panelChromeView?.needsDisplay = true
+        let panelSize = NSSize(width: stickyWidth, height: ceil(fitting.height))
+        if panelSize != panel.frame.size { panel.setFrameSize(panelSize) }
+
+        let visibleHeight = min(panelSize.height, maximumPanelHeight())
+        panelScrollView?.hasVerticalScroller = panelSize.height > visibleHeight + 0.5
+        let popoverSize = NSSize(width: panelSize.width, height: visibleHeight)
+        if panelPopover.contentSize != popoverSize {
+            panelPopover.contentSize = popoverSize
+        }
     }
 
     func updatePeriodControls() {
@@ -1952,24 +1953,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
-    // The panel container is created once; its content is rebuilt in place so
-    // the menu can stay open.
-    func ensureMenuSkeleton() {
-        panelMenu.appearance = panelTheme.menuAppearance
-        guard panelMenu.items.isEmpty else { return }
-        panelMenu.autoenablesItems = false
+    // The panel and scroll container are created once; rows are rebuilt in
+    // place so the popover can stay open. Tall dashboards scroll rather than
+    // extending beyond the current screen's visible frame.
+    func ensurePanelSkeleton() {
+        panelPopover.appearance = panelTheme.chromeAppearance
+        guard panelView == nil else { return }
 
         let panel = ThemedPanelView()
         panel.theme = panelTheme
+        panel.appearance = panelTheme.chromeAppearance
         panel.orientation = .vertical
         panel.alignment = .leading
         panel.spacing = 0
         panel.edgeInsets = NSEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
         panelView = panel
 
-        let panelItem = NSMenuItem()
-        panelItem.view = panel
-        panelMenu.addItem(panelItem)
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.verticalScrollElasticity = .automatic
+        scrollView.documentView = panel
+        panelScrollView = scrollView
+
+        let controller = NSViewController()
+        controller.view = scrollView
+        panelPopover.contentViewController = controller
     }
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {
@@ -2028,7 +2042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.orientation = .horizontal
         switcher.spacing = 9
         for p in Period.allCases {
-            let b = NSButton(title: p.letter, target: self,
+            let b = PointingHandButton(title: p.letter, target: self,
                              action: #selector(periodClicked(_:)))
             b.isBordered = false
             b.tag = p.rawValue
@@ -2045,7 +2059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             periodButtons.append(b)
         }
 
-        let capture = NSButton(
+        let capture = PointingHandButton(
             image: NSImage(systemSymbolName: "camera",
                            accessibilityDescription: "Copy Panel Screenshot")!,
             target: self, action: #selector(copyPanelScreenshot))
@@ -2075,19 +2089,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         sparkView = nil
         if active.isEmpty {
+            let isLoading = latestPanelData == nil
             panel.setCustomSpacing(16, after: panel.arrangedSubviews.last!)
-            panel.addArrangedSubview(label(nil, "No usage yet for this period", size: 13,
-                                          weight: .medium))
+            panel.addArrangedSubview(label(nil,
+                                          isLoading ? "Loading usage…" : "No usage yet for this period",
+                                          size: 13, weight: .medium))
             panel.setCustomSpacing(3, after: panel.arrangedSubviews.last!)
-            let emptyMessage = label(nil,
-                                     "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi.",
-                                     size: 12, color: colors.secondary)
+            let emptyMessage = label(
+                nil,
+                isLoading
+                    ? "Scanning local Claude Code, Codex,\nOpenCode, and pi history."
+                    : "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi.",
+                size: 12, color: colors.secondary)
             emptyMessage.maximumNumberOfLines = 2
             emptyMessage.lineBreakMode = .byWordWrapping
             panel.addArrangedSubview(emptyMessage)
             emptyMessage.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
             emptyMessage.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
             resizePanel()
+            if panelIsOpen { scrollPanelToTop() }
             return
         }
 
@@ -2101,7 +2121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             spark.axis = period.axis(cal: cal, now: Date(), rangeStyle: periodRangeStyle)
             spark.catEnabled = showExperimentalCat
             if let savedCatMotionState { spark.restoreMotionState(savedCatMotionState) }
-            spark.catAnimating = showExperimentalCat && menuIsOpen
+            spark.catAnimating = showExperimentalCat && panelIsOpen
             sparkView = spark
             panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(spark)
@@ -2154,7 +2174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Size from the unconstrained grid, then reserve the difference
             // between the displayed first column and its widest possible state.
             // Otherwise Auto Layout discovers the full-name width over several
-            // passes and the menu visibly jumps before settling.
+            // passes and the popover visibly jumps before settling.
             let headerWidth = headerRowIndices.map {
                 rows[$0][0].fittingSize.width
             }.max() ?? 0
@@ -2222,7 +2242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let pathExists = path.map {
                     FileManager.default.fileExists(atPath: $0)
                 } ?? false
-                let button = NSButton(
+                let button = PointingHandButton(
                     title: title,
                     target: pathExists ? self : nil,
                     action: pathExists ? #selector(openAttributedProject(_:)) : nil)
@@ -2281,7 +2301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             func sessionLink(_ session: AttributedSession) -> NSButton {
                 let rawName = sessionName(session)
                 let title = clipped(rawName)
-                let button = NSButton(title: title, target: self,
+                let button = PointingHandButton(title: title, target: self,
                                       action: #selector(resumeAttributedSession(_:)))
                 button.identifier = NSUserInterfaceItemIdentifier(session.key)
                 sessionLaunchTargets[session.key] = SessionLaunchTarget(
@@ -2400,6 +2420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         resizePanel()
+        if panelIsOpen { scrollPanelToTop() }
     }
 }
 
