@@ -31,11 +31,31 @@ public struct Agg: Equatable {
     }
 }
 
+public struct SessionStats: Equatable {
+    public let id: String
+    public var projectPath: String?
+    public var title: String?
+    public var firstActivity: Date
+    public var lastActivity: Date
+    public var agg: Agg
+
+    public init(id: String, projectPath: String? = nil, title: String? = nil,
+                firstActivity: Date, lastActivity: Date, agg: Agg = Agg()) {
+        self.id = id
+        self.projectPath = projectPath
+        self.title = title
+        self.firstActivity = firstActivity
+        self.lastActivity = lastActivity
+        self.agg = agg
+    }
+}
+
 public struct SourceStats {
     public let name: String
     public var available = false
     public var agg = Agg()
     public var perModel: [String: Agg] = [:]
+    public var sessions: [String: SessionStats] = [:]
     public var unknownPricing: Set<String> = []
     /// Spend per time bucket (see BucketSpec; defaults to 24 hours from the scan start)
     public var buckets: [Double] = []
@@ -44,6 +64,30 @@ public struct SourceStats {
     public var dataSince: Date?
 
     public init(name: String) { self.name = name }
+
+    mutating func addSessionUsage(id: String, projectPath: String?, title: String?,
+                                  date: Date, usage: Agg) {
+        let cleanID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanID.isEmpty else { return }
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let usableTitle = cleanTitle?.isEmpty == false ? cleanTitle : nil
+        if var session = sessions[cleanID] {
+            session.agg.add(usage)
+            // Scanners may visit de-duplicated records out of order. Anchor a
+            // session to its earliest known cwd rather than dictionary order.
+            if session.projectPath == nil || date < session.firstActivity {
+                session.projectPath = projectPath ?? session.projectPath
+            }
+            session.firstActivity = min(session.firstActivity, date)
+            session.lastActivity = max(session.lastActivity, date)
+            if session.title == nil { session.title = usableTitle }
+            sessions[cleanID] = session
+        } else {
+            sessions[cleanID] = SessionStats(id: cleanID, projectPath: projectPath,
+                                             title: usableTitle, firstActivity: date,
+                                             lastActivity: date, agg: usage)
+        }
+    }
 
     mutating func finishTotals() {
         for (_, a) in perModel { agg.add(a) }
@@ -354,6 +398,55 @@ public let codexSessionsRoot = home.appendingPathComponent(".codex/sessions")
 public let openCodeDBPath = home.appendingPathComponent(".local/share/opencode/opencode.db")
 public let piSessionsRoot = home.appendingPathComponent(".pi/agent/sessions")
 
+/// Normalizes each agent's recorded working directory into a common project
+/// identity. A Git root wins; non-repository work remains grouped by its cwd.
+private struct ProjectPathResolver {
+    private var cache: [String: String] = [:]
+
+    /// `resolvingSymlinksInPath` keeps the caller's spelling on a
+    /// case-insensitive volume. Walk existing components once so paths that
+    /// differ only in case still share a project key.
+    private func canonicalizeCase(of url: URL) -> URL {
+        guard url.path.hasPrefix("/"), fm.fileExists(atPath: url.path) else { return url }
+        var result = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in url.pathComponents.dropFirst() {
+            let names = (try? fm.contentsOfDirectory(atPath: result.path)) ?? []
+            let actual = names.first(where: { $0 == component })
+                ?? names.first(where: {
+                    $0.compare(component, options: [.caseInsensitive]) == .orderedSame
+                })
+            result.appendPathComponent(actual ?? component, isDirectory: true)
+        }
+        return result
+    }
+
+    mutating func resolve(_ rawPath: String?) -> String? {
+        guard let rawPath else { return nil }
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let cached = cache[trimmed] { return cached }
+
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        let absolutePath = expanded.hasPrefix("/")
+            ? expanded : home.appendingPathComponent(expanded).path
+        let normalized = URL(fileURLWithPath: absolutePath, isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let cwd = canonicalizeCase(of: normalized)
+        var candidate = cwd
+        while true {
+            if fm.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
+                cache[trimmed] = candidate.path
+                return candidate.path
+            }
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path { break }
+            candidate = parent
+        }
+        cache[trimmed] = cwd.path
+        return cwd.path
+    }
+}
+
 func num(_ v: Any?) -> Double {
     if let d = v as? Double { return d }
     if let i = v as? Int { return Double(i) }
@@ -471,17 +564,26 @@ final class ParseCache<Entry> {
 }
 
 struct ClaudeEntry {
-    let key: String       // request+message id, for streaming de-duplication
+    let key: String       // session+request+message id, for streaming de-duplication
+    let sessionID: String
+    let cwd: String?
+    let title: String?
     let model: String
     let usage: [String: Any]
     let date: Date
 }
 struct CodexEntry {
+    let sessionID: String
+    let cwd: String?
+    let title: String?
     let model: String
     let input, cacheRead, cacheWrite, outputTotal, reasoning: Double
     let date: Date
 }
 struct PiEntry {
+    let sessionID: String
+    let cwd: String?
+    let title: String?
     let provider, model: String
     let input, output, cacheRead, cacheWrite: Double
     let date: Date
@@ -510,8 +612,10 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
     claudeParseCache.prune(keeping: files.map(\.url))
 
     // Streaming rewrites the same request multiple times; keep the last entry per request+message.
-    var dedup: [String: (model: String, usage: [String: Any], date: Date)] = [:]
+    var dedup: [String: ClaudeEntry] = [:]
+    var projectResolver = ProjectPathResolver()
     for (url, mtime) in files where mtime >= dayStart {
+        let fallbackSessionID = url.deletingPathExtension().lastPathComponent
         let entries = claudeParseCache.entries(url, mtime: mtime) { text in
             lines(text).compactMap { line -> ClaudeEntry? in
                 guard let d = jsonObject(String(line)),
@@ -522,14 +626,18 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
                       let ts = d["timestamp"] as? String,
                       let date = parseISO(ts)
                 else { return nil }
+                let loggedSessionID = (d["sessionId"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let sessionID = loggedSessionID?.isEmpty == false
+                    ? loggedSessionID! : fallbackSessionID
                 let req = (d["requestId"] as? String) ?? (d["uuid"] as? String) ?? ts
-                return ClaudeEntry(key: req + ":" + ((msg["id"] as? String) ?? ""),
+                return ClaudeEntry(key: sessionID + ":" + req + ":" + ((msg["id"] as? String) ?? ""),
+                                   sessionID: sessionID, cwd: d["cwd"] as? String,
+                                   title: d["slug"] as? String,
                                    model: model, usage: usage, date: date)
             }
         }
-        for e in entries where e.date >= dayStart {
-            dedup[e.key] = (e.model, e.usage, e.date)
-        }
+        for e in entries where e.date >= dayStart { dedup[e.key] = e }
     }
 
     for (_, entry) in dedup {
@@ -552,8 +660,12 @@ public func scanClaudeCode(since dayStart: Date, root: URL = claudeProjectsRoot,
         // No pricing fallback: an uncatalogued model contributes $0 and is
         // flagged unknown (shown with a ~ marker) rather than guessed at.
         let cost = catalogCost?.value ?? 0
+        e.cost = cost
         a.cost += cost
         s.perModel[entry.model] = a
+        s.addSessionUsage(id: entry.sessionID,
+                          projectPath: projectResolver.resolve(entry.cwd),
+                          title: entry.title, date: entry.date, usage: e)
         if catalogCost == nil || catalogCost!.approximate {
             s.unknownPricing.insert(entry.model)
         }
@@ -577,12 +689,17 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
     let files = jsonlFilesWithDates(under: root)
     s.dataSince = files.map(\.mtime).min()
     codexParseCache.prune(keeping: files.map(\.url))
+    var projectResolver = ProjectPathResolver()
 
     for (url, mtime) in files where mtime >= dayStart {
         // The delta between cumulative counters is sequential per file, so the
         // whole file is parsed (and cached) at once; the loop below windows it.
+        let fallbackSessionID = url.deletingPathExtension().lastPathComponent
         let entries = codexParseCache.entries(url, mtime: mtime) { text in
             var out: [CodexEntry] = []
+            var sessionID = fallbackSessionID
+            var cwd: String?
+            var title: String?
             var model = "unknown"
             var previousTotal: [String: Any]?
             for line in lines(text) {
@@ -591,9 +708,21 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
                       let date = parseISO(ts)
                 else { continue }
                 let payload = d["payload"] as? [String: Any] ?? [:]
-                if d["type"] as? String == "turn_context",
-                   let nextModel = payload["model"] as? String, !nextModel.isEmpty {
-                    model = nextModel
+                if d["type"] as? String == "session_meta" {
+                    let loggedID = (payload["session_id"] as? String)
+                        ?? (payload["id"] as? String)
+                    if let loggedID, !loggedID.isEmpty { sessionID = loggedID }
+                    if let loggedCWD = payload["cwd"] as? String, !loggedCWD.isEmpty {
+                        cwd = loggedCWD
+                    }
+                    title = (payload["title"] as? String) ?? title
+                    continue
+                }
+                if d["type"] as? String == "turn_context" {
+                    if let nextModel = payload["model"] as? String, !nextModel.isEmpty {
+                        model = nextModel
+                    }
+                    if let nextCWD = payload["cwd"] as? String, !nextCWD.isEmpty { cwd = nextCWD }
                     continue
                 }
                 guard d["type"] as? String == "event_msg",
@@ -623,7 +752,8 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
                 let cacheRead = min(inputTotal, max(0, num(usage["cached_input_tokens"])))
                 let cacheWrite = min(inputTotal - cacheRead,
                                      max(0, num(usage["cache_write_input_tokens"])))
-                out.append(CodexEntry(model: model,
+                out.append(CodexEntry(sessionID: sessionID, cwd: cwd, title: title,
+                                      model: model,
                                       input: inputTotal - cacheRead - cacheWrite,
                                       cacheRead: cacheRead,
                                       cacheWrite: cacheWrite,
@@ -648,12 +778,90 @@ public func scanCodex(since dayStart: Date, root: URL = codexSessionsRoot,
             let cost = catalogCost?.value ?? 0
             a.cost += cost
             s.perModel[key] = a
+            let sessionUsage = Agg(input: e.input, output: e.outputTotal,
+                                   cacheRead: e.cacheRead, cacheWrite5m: e.cacheWrite,
+                                   cost: cost)
+            s.addSessionUsage(id: e.sessionID,
+                              projectPath: projectResolver.resolve(e.cwd),
+                              title: e.title, date: e.date, usage: sessionUsage)
             if catalogCost == nil || catalogCost!.approximate { s.unknownPricing.insert(key) }
             if let i = spec.index(e.date) { s.buckets[i] += cost }
         }
     }
     s.finishTotals()
     return s
+}
+
+private struct OpenCodeSessionMetadata {
+    let cwd: String?
+    let title: String?
+}
+
+private func sqliteColumns(_ db: OpaquePointer, table: String) -> Set<String> {
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "PRAGMA table_info(\"\(table)\")", -1,
+                             &statement, nil) == SQLITE_OK else { return [] }
+    defer { sqlite3_finalize(statement) }
+    var columns: Set<String> = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+        if let value = sqlite3_column_text(statement, 1) {
+            columns.insert(String(cString: value))
+        }
+    }
+    return columns
+}
+
+private func sqliteString(_ statement: OpaquePointer?, _ column: Int32) -> String? {
+    guard sqlite3_column_type(statement, column) != SQLITE_NULL,
+          let value = sqlite3_column_text(statement, column)
+    else { return nil }
+    return String(cString: value)
+}
+
+/// OpenCode keeps attribution outside message JSON. Read it opportunistically:
+/// older/minimal databases without these tables still produce session totals.
+private func openCodeSessionMetadata(_ db: OpaquePointer) -> [String: OpenCodeSessionMetadata] {
+    let projectColumns = sqliteColumns(db, table: "project")
+    let projectPathColumn = ["worktree", "directory", "path"]
+        .first(where: projectColumns.contains)
+    var projectPaths: [String: String] = [:]
+    if projectColumns.contains("id"), let projectPathColumn {
+        var statement: OpaquePointer?
+        let sql = "SELECT \"id\", \"\(projectPathColumn)\" FROM \"project\""
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let id = sqliteString(statement, 0), let path = sqliteString(statement, 1) {
+                    projectPaths[id] = path
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+    }
+
+    let columns = sqliteColumns(db, table: "session")
+    guard columns.contains("id") else { return [:] }
+    let directoryColumn = ["directory", "cwd", "path"].first(where: columns.contains)
+    let titleColumn = ["title", "name", "slug"].first(where: columns.contains)
+    let projectColumn = ["project_id", "projectID"].first(where: columns.contains)
+    func expression(_ column: String?) -> String { column.map { "\"\($0)\"" } ?? "NULL" }
+
+    var statement: OpaquePointer?
+    let sql = "SELECT \"id\", \(expression(directoryColumn)), \(expression(titleColumn)), \(expression(projectColumn)) FROM \"session\""
+    guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [:] }
+    defer { sqlite3_finalize(statement) }
+    var sessions: [String: OpenCodeSessionMetadata] = [:]
+    while sqlite3_step(statement) == SQLITE_ROW {
+        guard let id = sqliteString(statement, 0) else { continue }
+        let directory = sqliteString(statement, 1)
+        let title = sqliteString(statement, 2)
+        let projectID = sqliteString(statement, 3)
+        // The project worktree survives sessions launched from nested or later
+        // deleted directories, so prefer it when OpenCode recorded both.
+        sessions[id] = OpenCodeSessionMetadata(cwd: projectID.flatMap { projectPaths[$0] }
+                                                   ?? directory,
+                                               title: title)
+    }
+    return sessions
 }
 
 public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
@@ -679,14 +887,20 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
     }
     sqlite3_finalize(minStmt)
 
+    let sessionMetadata = openCodeSessionMetadata(db!)
+    var projectResolver = ProjectPathResolver()
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, "SELECT data FROM message WHERE time_created >= ?", -1, &stmt, nil) == SQLITE_OK else { return s }
+    let sql = "SELECT id, session_id, time_created, data FROM message WHERE time_created >= ?"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return s }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, Int64(dayStart.timeIntervalSince1970 * 1000))
 
     while sqlite3_step(stmt) == SQLITE_ROW {
-        guard let c = sqlite3_column_text(stmt, 0) else { continue }
-        guard let d = jsonObject(String(cString: c)),
+        let messageID = sqliteString(stmt, 0) ?? "unknown-message"
+        let sessionID = sqliteString(stmt, 1) ?? messageID
+        let rowDate = Date(timeIntervalSince1970: Double(sqlite3_column_int64(stmt, 2)) / 1000)
+        guard let c = sqlite3_column_text(stmt, 3),
+              let d = jsonObject(String(cString: c)),
               d["role"] as? String == "assistant",
               let tokens = d["tokens"] as? [String: Any]
         else { continue }
@@ -714,13 +928,23 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
         let cost = catalogCost?.value ?? 0
         a.cost += cost
         s.perModel[key] = a
+        let eventDate: Date
+        if let time = d["time"] as? [String: Any], num(time["created"]) > 0 {
+            eventDate = Date(timeIntervalSince1970: num(time["created"]) / 1000)
+        } else {
+            eventDate = rowDate
+        }
+        let metadata = sessionMetadata[sessionID]
+        let sessionUsage = Agg(input: input, output: output + reasoning,
+                               cacheRead: cacheRead, cacheWrite5m: cacheWrite,
+                               cost: cost)
+        s.addSessionUsage(id: sessionID,
+                          projectPath: projectResolver.resolve(metadata?.cwd),
+                          title: metadata?.title, date: eventDate, usage: sessionUsage)
         if catalogCost == nil || catalogCost!.approximate {
             s.unknownPricing.insert(key)
         }
-        if let time = d["time"] as? [String: Any], num(time["created"]) > 0,
-           let h = spec.index(Date(timeIntervalSince1970: num(time["created"]) / 1000)) {
-            s.buckets[h] += cost
-        }
+        if let h = spec.index(eventDate) { s.buckets[h] += cost }
     }
     s.finishTotals()
     return s
@@ -737,24 +961,42 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
     let files = jsonlFilesWithDates(under: root)
     s.dataSince = files.map(\.mtime).min()
     piParseCache.prune(keeping: files.map(\.url))
+    var projectResolver = ProjectPathResolver()
 
     for (url, mtime) in files where mtime >= dayStart {
+        let fallbackSessionID = url.deletingPathExtension().lastPathComponent
         let entries = piParseCache.entries(url, mtime: mtime) { text in
-            lines(text).compactMap { line -> PiEntry? in
-                guard let d = jsonObject(String(line)),
-                      d["type"] as? String == "message",
+            var out: [PiEntry] = []
+            var sessionID = fallbackSessionID
+            var cwd: String?
+            var title: String?
+            for line in lines(text) {
+                guard let d = jsonObject(String(line)) else { continue }
+                if d["type"] as? String == "session" {
+                    if let loggedID = d["id"] as? String, !loggedID.isEmpty { sessionID = loggedID }
+                    if let loggedCWD = d["cwd"] as? String, !loggedCWD.isEmpty { cwd = loggedCWD }
+                    title = (d["title"] as? String) ?? (d["name"] as? String) ?? title
+                    continue
+                }
+                if d["type"] as? String == "session_info" {
+                    title = (d["name"] as? String) ?? (d["title"] as? String) ?? title
+                    continue
+                }
+                guard d["type"] as? String == "message",
                       let msg = d["message"] as? [String: Any],
                       msg["role"] as? String == "assistant",
                       let usage = msg["usage"] as? [String: Any],
                       let ts = d["timestamp"] as? String,
                       let date = parseISO(ts)
-                else { return nil }
-                return PiEntry(provider: providerID((msg["provider"] as? String) ?? "unknown"),
-                              model: (msg["model"] as? String) ?? "unknown",
-                              input: num(usage["input"]), output: num(usage["output"]),
-                              cacheRead: num(usage["cacheRead"]), cacheWrite: num(usage["cacheWrite"]),
-                              date: date)
+                else { continue }
+                out.append(PiEntry(sessionID: sessionID, cwd: cwd, title: title,
+                                   provider: providerID((msg["provider"] as? String) ?? "unknown"),
+                                   model: (msg["model"] as? String) ?? "unknown",
+                                   input: num(usage["input"]), output: num(usage["output"]),
+                                   cacheRead: num(usage["cacheRead"]),
+                                   cacheWrite: num(usage["cacheWrite"]), date: date))
             }
+            return out
         }
 
         for e in entries where e.date >= dayStart {
@@ -770,6 +1012,12 @@ public func scanPi(since dayStart: Date, root: URL = piSessionsRoot,
             // No stored-cost fallback: uncatalogued models show $0 / unknown (~).
             let cost = catalogCost?.value ?? 0
             a.cost += cost
+            let sessionUsage = Agg(input: e.input, output: e.output,
+                                   cacheRead: e.cacheRead, cacheWrite5m: e.cacheWrite,
+                                   cost: cost)
+            s.addSessionUsage(id: e.sessionID,
+                              projectPath: projectResolver.resolve(e.cwd),
+                              title: e.title, date: e.date, usage: sessionUsage)
             if let h = spec.index(e.date) {
                 s.buckets[h] += cost
             }

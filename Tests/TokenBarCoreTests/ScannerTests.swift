@@ -43,7 +43,8 @@ final class ClaudeScannerTests: FixtureTestCase {
     /// A Claude Code JSONL assistant entry in the shape the real logs use.
     func entry(ts: String, req: String, msgId: String = "msg_1", model: String = "claude-fable-5",
                type: String = "assistant", input: Int = 0, output: Int = 0, cacheRead: Int = 0,
-               cacheWriteTotal: Int = 0, write5m: Int? = nil, write1h: Int? = nil) -> String {
+               cacheWriteTotal: Int = 0, write5m: Int? = nil, write1h: Int? = nil,
+               sessionID: String? = nil, cwd: String? = nil, title: String? = nil) -> String {
         var usage: [String: Any] = [
             "input_tokens": input, "output_tokens": output,
             "cache_read_input_tokens": cacheRead,
@@ -53,10 +54,13 @@ final class ClaudeScannerTests: FixtureTestCase {
             usage["cache_creation"] = ["ephemeral_5m_input_tokens": write5m ?? 0,
                                        "ephemeral_1h_input_tokens": write1h ?? 0]
         }
-        let d: [String: Any] = [
+        var d: [String: Any] = [
             "type": type, "timestamp": ts, "requestId": req,
             "message": ["id": msgId, "model": model, "usage": usage],
         ]
+        if let sessionID { d["sessionId"] = sessionID }
+        if let cwd { d["cwd"] = cwd }
+        if let title { d["slug"] = title }
         return String(data: try! JSONSerialization.data(withJSONObject: d), encoding: .utf8)!
     }
 
@@ -154,6 +158,34 @@ final class ClaudeScannerTests: FixtureTestCase {
         let s = scanClaudeCode(since: dayStart, root: tmp.appendingPathComponent("nope"))
         XCTAssertFalse(s.available)
         XCTAssertEqual(s.agg, Agg())
+    }
+
+    func testAttributesUsageToSessionAndGitProject() throws {
+        let repo = tmp.appendingPathComponent("repo")
+        let nested = repo.appendingPathComponent("Sources/Feature")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let linkedRepo = tmp.appendingPathComponent("repo-link")
+        try FileManager.default.createSymbolicLink(at: linkedRepo, withDestinationURL: repo)
+        let linkedNested = linkedRepo.appendingPathComponent("Sources/Feature")
+        let alternateCase = linkedNested.path.uppercased()
+        let recordedCWD = FileManager.default.fileExists(atPath: alternateCase)
+            ? alternateCase : linkedNested.path
+        let logs = tmp.appendingPathComponent("logs")
+        try write([
+            entry(ts: inRange, req: "r1", output: 10, sessionID: "claude-session",
+                  cwd: recordedCWD, title: "bright-otter"),
+            entry(ts: inRange, req: "r2", output: 20, sessionID: "claude-session",
+                  cwd: recordedCWD, title: "bright-otter"),
+        ], to: "logs/s.jsonl")
+
+        let stats = scanClaudeCode(since: dayStart, root: logs, catalog: nil)
+        let session = try XCTUnwrap(stats.sessions["claude-session"])
+        XCTAssertEqual(session.projectPath, repo.path)
+        XCTAssertEqual(session.title, "bright-otter")
+        XCTAssertEqual(session.agg.output, 30)
+        XCTAssertEqual(session.agg, stats.agg)
     }
 }
 
@@ -309,6 +341,46 @@ final class OpenCodeScannerTests: FixtureTestCase {
         let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: catalog)
         XCTAssertEqual(s.agg.cost, 2, accuracy: 1e-9)
     }
+
+    func testAttributesUsageThroughSessionAndProjectTables() throws {
+        let repo = tmp.appendingPathComponent("repo")
+        let nested = repo.appendingPathComponent("apps/client")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"),
+                                                withIntermediateDirectories: true)
+        // Leave the recorded session directory deleted: project.worktree must
+        // still preserve attribution to the repository.
+
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, "CREATE TABLE project (id text PRIMARY KEY, worktree text)", nil, nil, nil)
+        sqlite3_exec(db, "CREATE TABLE session (id text PRIMARY KEY, project_id text, directory text, title text)", nil, nil, nil)
+        sqlite3_exec(db, """
+            CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL,
+                time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)
+            """, nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO project VALUES ('project-1','\(repo.path)')", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO session VALUES ('opencode-session','project-1','\(nested.path)','Refactor UI')", nil, nil, nil)
+
+        let ms = Int64(Date().timeIntervalSince1970 * 1000)
+        let data = assistant(input: 90, output: 12, cost: 0)
+        let json = String(data: try JSONSerialization.data(withJSONObject: data), encoding: .utf8)!
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "INSERT INTO message VALUES ('m1','opencode-session',\(ms),\(ms),?)", -1,
+                                          &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, json, -1, transient)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+
+        let stats = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
+        let session = try XCTUnwrap(stats.sessions["opencode-session"])
+        XCTAssertEqual(session.projectPath, repo.path)
+        XCTAssertEqual(session.title, "Refactor UI")
+        XCTAssertEqual(session.agg.input, 90)
+        XCTAssertEqual(session.agg.output, 12)
+        XCTAssertEqual(session.agg, stats.agg)
+    }
 }
 
 // MARK: - Codex
@@ -463,6 +535,28 @@ final class CodexScannerTests: FixtureTestCase {
     func testMissingRootIsUnavailable() {
         XCTAssertFalse(scanCodex(since: dayStart, root: tmp.appendingPathComponent("nope")).available)
     }
+
+    func testAttributesUsageFromSessionMetadata() throws {
+        let repo = tmp.appendingPathComponent("repo")
+        let nested = repo.appendingPathComponent("Packages/App")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let logs = tmp.appendingPathComponent("logs")
+        let metadata = line(ts: inRange, type: "session_meta",
+                            payload: ["session_id": "codex-session", "cwd": nested.path,
+                                      "title": "Fix the build"])
+        try write([metadata] + request(model: "gpt-test", input: 40, output: 50),
+                  to: "logs/session.jsonl")
+
+        let stats = scanCodex(since: dayStart, root: logs, catalog: nil)
+        let session = try XCTUnwrap(stats.sessions["codex-session"])
+        XCTAssertEqual(session.projectPath, repo.path)
+        XCTAssertEqual(session.title, "Fix the build")
+        XCTAssertEqual(session.agg.input, 40)
+        XCTAssertEqual(session.agg.output, 50)
+        XCTAssertEqual(session.agg, stats.agg)
+    }
 }
 
 // MARK: - pi
@@ -576,6 +670,30 @@ final class PiScannerTests: FixtureTestCase {
         XCTAssertEqual(s.agg.cost, 33, accuracy: 1e-9)
         XCTAssertNotNil(s.perModel["amazon-bedrock/openai.gpt-5.6-sol"])
         XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
+    func testAttributesUsageFromSessionHeader() throws {
+        let repo = tmp.appendingPathComponent("repo")
+        let nested = repo.appendingPathComponent("Tools")
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"),
+                                                withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let header: [String: Any] = ["type": "session", "id": "pi-session",
+                                     "cwd": nested.path, "title": "Ship attribution",
+                                     "timestamp": inRange, "version": 3]
+        let headerLine = String(data: try JSONSerialization.data(withJSONObject: header),
+                                encoding: .utf8)!
+        let logs = tmp.appendingPathComponent("logs")
+        try write([headerLine, entry(ts: inRange, input: 70, output: 8)],
+                  to: "logs/session.jsonl")
+
+        let stats = scanPi(since: dayStart, root: logs, catalog: nil)
+        let session = try XCTUnwrap(stats.sessions["pi-session"])
+        XCTAssertEqual(session.projectPath, repo.path)
+        XCTAssertEqual(session.title, "Ship attribution")
+        XCTAssertEqual(session.agg.input, 70)
+        XCTAssertEqual(session.agg.output, 8)
+        XCTAssertEqual(session.agg, stats.agg)
     }
 }
 

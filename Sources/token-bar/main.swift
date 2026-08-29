@@ -17,7 +17,8 @@ let appDefaults: UserDefaults = {
     let canonical = UserDefaults(suiteName: "com.shrivara.tokenbar") ?? .standard
     let legacy = UserDefaults(suiteName: "token-bar")
     for key in ["period", "periodRangeStyle", "showGraph", "showProviderIcons",
-                "showFullModelNames", "menuBarFields"]
+                "showFullModelNames", "menuBarFields", "theme",
+                "showExperimentalAttribution"]
         where canonical.object(forKey: key) == nil {
         if let value = legacy?.object(forKey: key) {
             canonical.set(value, forKey: key)
@@ -25,6 +26,301 @@ let appDefaults: UserDefaults = {
     }
     return canonical
 }()
+
+// MARK: - Panel themes
+
+private extension NSColor {
+    static func tokenBarRGB(_ hex: UInt32) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat((hex >> 16) & 0xff) / 255,
+            green: CGFloat((hex >> 8) & 0xff) / 255,
+            blue: CGFloat(hex & 0xff) / 255,
+            alpha: 1
+        )
+    }
+}
+
+struct PanelPalette {
+    let background: NSColor
+    let surface: NSColor
+    let primary: NSColor
+    let secondary: NSColor
+    let muted: NSColor
+    let accent: NSColor
+    let border: NSColor
+}
+
+enum PanelTheme: String, CaseIterable {
+    case system
+    case catppuccinMocha = "catppuccin-mocha"
+    case dracula
+    case gruvboxDark = "gruvbox-dark"
+    case nord
+    case solarizedDark = "solarized-dark"
+    case tokyoNight = "tokyo-night"
+    case catppuccinLatte = "catppuccin-latte"
+    case githubLight = "github-light"
+    case gruvboxLight = "gruvbox-light"
+    case solarizedLight = "solarized-light"
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .catppuccinMocha: return "Catppuccin Mocha"
+        case .dracula: return "Dracula"
+        case .gruvboxDark: return "Gruvbox Dark"
+        case .nord: return "Nord"
+        case .solarizedDark: return "Solarized Dark"
+        case .tokyoNight: return "Tokyo Night"
+        case .catppuccinLatte: return "Catppuccin Latte"
+        case .githubLight: return "GitHub Light"
+        case .gruvboxLight: return "Gruvbox Light"
+        case .solarizedLight: return "Solarized Light"
+        }
+    }
+
+    private static let systemPalette = PanelPalette(
+        background: .windowBackgroundColor,
+        surface: .controlBackgroundColor,
+        primary: .labelColor,
+        secondary: .secondaryLabelColor,
+        muted: .tertiaryLabelColor,
+        accent: .labelColor,
+        border: .separatorColor
+    )
+    private static let catppuccinMochaPalette = PanelPalette(
+        background: .tokenBarRGB(0x1e1e2e),
+        surface: .tokenBarRGB(0x313244),
+        primary: .tokenBarRGB(0xcdd6f4),
+        secondary: .tokenBarRGB(0xa6adc8),
+        muted: .tokenBarRGB(0x7f849c),
+        accent: .tokenBarRGB(0xcba6f7),
+        border: .tokenBarRGB(0x45475a)
+    )
+    private static let draculaPalette = PanelPalette(
+        background: .tokenBarRGB(0x282a36),
+        surface: .tokenBarRGB(0x44475a),
+        primary: .tokenBarRGB(0xf8f8f2),
+        secondary: .tokenBarRGB(0xbfbfbf),
+        muted: .tokenBarRGB(0x6272a4),
+        accent: .tokenBarRGB(0xbd93f9),
+        border: .tokenBarRGB(0x44475a)
+    )
+    private static let gruvboxDarkPalette = PanelPalette(
+        background: .tokenBarRGB(0x282828),
+        surface: .tokenBarRGB(0x3c3836),
+        primary: .tokenBarRGB(0xebdbb2),
+        secondary: .tokenBarRGB(0xd5c4a1),
+        muted: .tokenBarRGB(0x928374),
+        accent: .tokenBarRGB(0xfabd2f),
+        border: .tokenBarRGB(0x504945)
+    )
+    private static let nordPalette = PanelPalette(
+        background: .tokenBarRGB(0x2e3440),
+        surface: .tokenBarRGB(0x3b4252),
+        primary: .tokenBarRGB(0xeceff4),
+        secondary: .tokenBarRGB(0xd8dee9),
+        muted: .tokenBarRGB(0x81a1c1),
+        accent: .tokenBarRGB(0x88c0d0),
+        border: .tokenBarRGB(0x4c566a)
+    )
+    private static let solarizedDarkPalette = PanelPalette(
+        background: .tokenBarRGB(0x002b36),
+        surface: .tokenBarRGB(0x073642),
+        primary: .tokenBarRGB(0x93a1a1),
+        secondary: .tokenBarRGB(0x839496),
+        muted: .tokenBarRGB(0x657b83),
+        accent: .tokenBarRGB(0x2aa198),
+        border: .tokenBarRGB(0x586e75)
+    )
+    private static let tokyoNightPalette = PanelPalette(
+        background: .tokenBarRGB(0x1a1b26),
+        surface: .tokenBarRGB(0x24283b),
+        primary: .tokenBarRGB(0xc0caf5),
+        secondary: .tokenBarRGB(0xa9b1d6),
+        muted: .tokenBarRGB(0x565f89),
+        accent: .tokenBarRGB(0x7aa2f7),
+        border: .tokenBarRGB(0x3b4261)
+    )
+    private static let catppuccinLattePalette = PanelPalette(
+        background: .tokenBarRGB(0xeff1f5),
+        surface: .tokenBarRGB(0xdce0e8),
+        primary: .tokenBarRGB(0x4c4f69),
+        secondary: .tokenBarRGB(0x5c5f77),
+        muted: .tokenBarRGB(0x7c7f93),
+        accent: .tokenBarRGB(0x8839ef),
+        border: .tokenBarRGB(0xbcc0cc)
+    )
+    private static let githubLightPalette = PanelPalette(
+        background: .tokenBarRGB(0xffffff),
+        surface: .tokenBarRGB(0xf6f8fa),
+        primary: .tokenBarRGB(0x1f2328),
+        secondary: .tokenBarRGB(0x59636e),
+        muted: .tokenBarRGB(0x6e7781),
+        accent: .tokenBarRGB(0x0969da),
+        border: .tokenBarRGB(0xd0d7de)
+    )
+    private static let gruvboxLightPalette = PanelPalette(
+        background: .tokenBarRGB(0xfbf1c7),
+        surface: .tokenBarRGB(0xebdbb2),
+        primary: .tokenBarRGB(0x3c3836),
+        secondary: .tokenBarRGB(0x504945),
+        muted: .tokenBarRGB(0x7c6f64),
+        accent: .tokenBarRGB(0xb57614),
+        border: .tokenBarRGB(0xd5c4a1)
+    )
+    private static let solarizedLightPalette = PanelPalette(
+        background: .tokenBarRGB(0xfdf6e3),
+        surface: .tokenBarRGB(0xeee8d5),
+        primary: .tokenBarRGB(0x586e75),
+        secondary: .tokenBarRGB(0x657b83),
+        muted: .tokenBarRGB(0x839496),
+        accent: .tokenBarRGB(0x268bd2),
+        border: .tokenBarRGB(0x93a1a1)
+    )
+
+    var palette: PanelPalette {
+        switch self {
+        case .system: return Self.systemPalette
+        case .catppuccinMocha: return Self.catppuccinMochaPalette
+        case .dracula: return Self.draculaPalette
+        case .gruvboxDark: return Self.gruvboxDarkPalette
+        case .nord: return Self.nordPalette
+        case .solarizedDark: return Self.solarizedDarkPalette
+        case .tokyoNight: return Self.tokyoNightPalette
+        case .catppuccinLatte: return Self.catppuccinLattePalette
+        case .githubLight: return Self.githubLightPalette
+        case .gruvboxLight: return Self.gruvboxLightPalette
+        case .solarizedLight: return Self.solarizedLightPalette
+        }
+    }
+
+    // Preserve the existing monochrome controls for System; named themes use
+    // their signature accent for the graph and selected period.
+    var selectionColor: NSColor {
+        self == .system ? palette.secondary : palette.accent
+    }
+
+    var isLight: Bool {
+        switch self {
+        case .catppuccinLatte, .githubLight, .gruvboxLight, .solarizedLight:
+            return true
+        default:
+            return false
+        }
+    }
+
+    // Match the surrounding native menu chrome to each fixed palette while
+    // System continues to inherit the current macOS appearance.
+    var menuAppearance: NSAppearance? {
+        guard self != .system else { return nil }
+        return NSAppearance(named: isLight ? .aqua : .darkAqua)
+    }
+
+    static func load(from defaults: UserDefaults) -> PanelTheme {
+        guard let rawValue = defaults.string(forKey: "theme"),
+              let theme = PanelTheme(rawValue: rawValue)
+        else { return .system }
+        return theme
+    }
+
+    var swatchImage: NSImage {
+        let colors = palette
+        let image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
+            let swatchRect = rect.insetBy(dx: 1, dy: 1)
+            let outline = NSBezierPath(roundedRect: swatchRect, xRadius: 3, yRadius: 3)
+            colors.background.setFill()
+            outline.fill()
+            colors.accent.setFill()
+            NSBezierPath(ovalIn: NSRect(x: swatchRect.maxX - 5.5,
+                                        y: swatchRect.minY + 1.5,
+                                        width: 4, height: 4)).fill()
+            colors.border.setStroke()
+            outline.lineWidth = 1
+            outline.stroke()
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+}
+
+final class ThemedPanelView: NSStackView {
+    var theme: PanelTheme = .system {
+        didSet { if theme != oldValue { needsDisplay = true } }
+    }
+    var usesSnapshotStyle = false {
+        didSet { if usesSnapshotStyle != oldValue { needsDisplay = true } }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if theme != .system {
+            let colors = theme.palette
+            colors.background.setFill()
+            if usesSnapshotStyle {
+                NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill()
+
+                let borderRect = bounds.insetBy(dx: 0.5, dy: 0.5)
+                let border = NSBezierPath(roundedRect: borderRect, xRadius: 11.5, yRadius: 11.5)
+                colors.border.withAlphaComponent(0.75).setStroke()
+                border.lineWidth = 1
+                border.stroke()
+            } else {
+                NSBezierPath(rect: bounds).fill()
+            }
+        }
+        super.draw(dirtyRect)
+    }
+}
+
+// NSMenu reserves a few native-background pixels above and below a custom item.
+// This noninteractive overlay paints only those margins, leaving the panel and
+// its controls untouched while making the palette reach the menu's outer edge.
+final class ThemedMenuChromeView: NSView {
+    weak var panelView: ThemedPanelView?
+    var theme: PanelTheme = .system
+
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard theme != .system, let panelView,
+              panelView.window === window else { return }
+        let colors = theme.palette
+        colors.background.setFill()
+        let panelRect = panelView.convert(panelView.bounds, to: self).intersection(bounds)
+
+        func fill(_ rect: NSRect) {
+            guard !rect.isNull, rect.width > 0, rect.height > 0 else { return }
+            NSBezierPath(rect: rect).fill()
+        }
+        if panelRect.isNull {
+            fill(bounds)
+        } else {
+            fill(NSRect(x: bounds.minX, y: bounds.minY,
+                        width: bounds.width, height: panelRect.minY - bounds.minY))
+            fill(NSRect(x: bounds.minX, y: panelRect.maxY,
+                        width: bounds.width, height: bounds.maxY - panelRect.maxY))
+            fill(NSRect(x: bounds.minX, y: panelRect.minY,
+                        width: panelRect.minX - bounds.minX, height: panelRect.height))
+            fill(NSRect(x: panelRect.maxX, y: panelRect.minY,
+                        width: bounds.maxX - panelRect.maxX, height: panelRect.height))
+        }
+
+        colors.border.withAlphaComponent(0.75).setStroke()
+        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                  xRadius: 11.5, yRadius: 11.5)
+        border.lineWidth = 1
+        border.stroke()
+    }
+}
 
 struct MenuBarFields: OptionSet {
     let rawValue: Int
@@ -111,6 +407,7 @@ private final class LaserOverlayView: NSView {
     var origins: [NSPoint] = []
     var endpoints: [NSPoint] = []
     var colors: [NSColor] = []
+    var highlightColor = NSColor.white
     var laserVisible = false
 
     override func draw(_ dirtyRect: NSRect) {
@@ -128,7 +425,7 @@ private final class LaserOverlayView: NSView {
                 .withAlphaComponent(0.78).setStroke()
             beam.lineWidth = 1.5
             beam.stroke()
-            NSColor.white.withAlphaComponent(0.92).setStroke()
+            highlightColor.withAlphaComponent(0.92).setStroke()
             beam.lineWidth = 0.4
             beam.stroke()
         }
@@ -158,6 +455,9 @@ final class SparkBarView: NSView {
     }
     var axis: [(CGFloat, String)] = [] {
         didSet { if axis.map(\.1) != oldValue.map(\.1) { needsDisplay = true } }
+    }
+    var theme: PanelTheme = .system {
+        didSet { if theme != oldValue { needsDisplay = true } }
     }
     var catEnabled = false {
         didSet {
@@ -336,10 +636,11 @@ final class SparkBarView: NSView {
         let graphHeight = bounds.height - axisHeight - captionHeight
         // Reserve just enough room above the tallest bar for the cat.
         let barArea = graphHeight - (catEnabled ? 11 : 0)
+        let colors = theme.palette
 
         let tiny: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .regular),
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            .foregroundColor: colors.muted,
         ]
 
         // Caption: what the bars mean (left) and the scale (right)
@@ -359,7 +660,7 @@ final class SparkBarView: NSView {
             p.lineWidth = 0.5
             var pattern: [CGFloat] = [2, 3]
             p.setLineDash(&pattern, count: 2, phase: 0)
-            NSColor.labelColor.withAlphaComponent(alpha).setStroke()
+            colors.primary.withAlphaComponent(alpha).setStroke()
             p.stroke()
         }
         if (values.max() ?? 0) > 0 {
@@ -370,8 +671,13 @@ final class SparkBarView: NSView {
         for (i, v) in values.enumerated() {
             let h = v > 0 ? max(2, CGFloat(v / maxV) * barArea) : 1.5
             let rect = NSRect(x: CGFloat(i) * (bw + gap), y: axisHeight, width: bw, height: h)
-            let alpha: CGFloat = v > 0 ? 0.55 : 0.12
-            NSColor.labelColor.withAlphaComponent(alpha).setFill()
+            let alpha: CGFloat
+            if theme == .system {
+                alpha = v > 0 ? 0.55 : 0.12
+            } else {
+                alpha = v > 0 ? 0.68 : 0.16
+            }
+            colors.accent.withAlphaComponent(alpha).setFill()
             NSBezierPath(roundedRect: rect, xRadius: min(bw / 3, 2), yRadius: min(bw / 3, 2)).fill()
         }
 
@@ -438,7 +744,8 @@ final class SparkBarView: NSView {
         default: headYOffset = 0
         }
         let headXOffset = headX - 1
-        let catColor = NSColor.labelColor.withAlphaComponent(0.78)
+        let catAlpha: CGFloat = theme == .system ? 0.78 : 0.82
+        let catColor = theme.palette.primary.withAlphaComponent(catAlpha)
 
         if action == .zoom, !reduceMotion {
             updateLaserOverlay(catX: catX, catY: catY, at: now)
@@ -569,7 +876,8 @@ final class SparkBarView: NSView {
         }
 
         // Contrasting details are monochrome cutouts from the silhouette.
-        NSColor.controlBackgroundColor.withAlphaComponent(0.9).setFill()
+        let detailColor = theme == .system ? theme.palette.surface : theme.palette.background
+        detailColor.withAlphaComponent(0.9).setFill()
         if action == .pant {
             let mouthHeight = 0.9 + abs(CGFloat(sin(actionProgress * .pi * 12))) * 0.9
             NSBezierPath(ovalIn: NSRect(x: 4 + headXOffset,
@@ -581,7 +889,7 @@ final class SparkBarView: NSView {
             drawLaserEyes()
         } else {
             // A contrasting eye becomes a short line during the slow-blink action.
-            NSColor.controlBackgroundColor.withAlphaComponent(0.9).setStroke()
+            detailColor.withAlphaComponent(0.9).setStroke()
             let blinkClosed = action == .blink && sin(.pi * actionProgress) > 0.35
             if blinkClosed {
                 let eye = NSBezierPath()
@@ -664,6 +972,7 @@ final class SparkBarView: NSView {
         if let laserWindow, laserWindow.frame == panelFrame { return }
         laserWindow?.orderOut(nil)
         let overlay = LaserOverlayView(frame: NSRect(origin: .zero, size: panelFrame.size))
+        overlay.highlightColor = (theme == .system || theme.isLight) ? .white : theme.palette.primary
         let panel = NSPanel(contentRect: panelFrame,
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
@@ -690,14 +999,16 @@ final class SparkBarView: NSView {
 final class ProviderBadgeView: NSView {
     let monogram: String
     let image: NSImage?
+    var theme: PanelTheme
 
-    init(provider: String) {
+    init(provider: String, theme: PanelTheme = .system) {
         let glyphProvider = Self.glyphProvider(for: provider)
         let knownMonograms = ["openrouter": "OR"]
         monogram = knownMonograms[glyphProvider]
             ?? String(glyphProvider.uppercased().filter(\.isLetter).prefix(2))
         image = Bundle.module.url(forResource: glyphProvider, withExtension: "svg")
             .flatMap(NSImage.init(contentsOf:))
+        self.theme = theme
         super.init(frame: .zero)
     }
 
@@ -721,15 +1032,20 @@ final class ProviderBadgeView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: 14, height: 14) }
 
     override func draw(_ dirtyRect: NSRect) {
+        let colors = theme.palette
         if let image {
             image.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1)
             return
         }
-        NSColor.tertiaryLabelColor.withAlphaComponent(0.2).setFill()
+        if theme == .system {
+            colors.muted.withAlphaComponent(0.2).setFill()
+        } else {
+            colors.surface.setFill()
+        }
         NSBezierPath(roundedRect: bounds, xRadius: 3, yRadius: 3).fill()
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 7, weight: .bold),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: colors.secondary,
         ]
         let size = (monogram as NSString).size(withAttributes: attributes)
         (monogram as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2,
@@ -740,6 +1056,12 @@ final class ProviderBadgeView: NSView {
 
 // MARK: - App
 
+struct SessionLaunchTarget {
+    let source: String
+    let id: String
+    let projectPath: String?
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var timer: Timer?
@@ -748,12 +1070,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var displayed = BarValues()
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
+    var sessionLaunchTargets: [String: SessionLaunchTarget] = [:]
     var menuSignature = ""
     var latestPanelData: (period: Period, rangeStyle: PeriodRangeStyle,
                           total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
     fileprivate var savedCatMotionState: CatMotionState?
-    var panelView: NSStackView?
+    var panelView: ThemedPanelView?
+    var panelChromeView: ThemedMenuChromeView?
     var periodField: NSTextField?
     var periodButtons: [NSButton] = []
     var screenshotButton: NSButton?
@@ -771,8 +1095,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var showProviderIcons = appDefaults.object(forKey: "showProviderIcons") as? Bool ?? true
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
     var menuBarFields = MenuBarFields.load(from: appDefaults)
-    // Experimental and opt-in: an unset preference must never enable animation.
+    var panelTheme = PanelTheme.load(from: appDefaults)
+    // Experimental features are opt-in; unset preferences must stay disabled.
     var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
+    var showExperimentalAttribution = appDefaults.object(forKey: "showExperimentalAttribution") as? Bool ?? false
 
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
     var scanning = false
@@ -879,6 +1205,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menuIsOpen = false
     var pendingBar: BarValues?
 
+    func installPanelMenuChrome() {
+        guard menuIsOpen, panelTheme != .system, let panel = panelView,
+              let contentView = panel.window?.contentView,
+              contentView !== panel else {
+            removePanelMenuChrome()
+            return
+        }
+
+        let chrome: ThemedMenuChromeView
+        if let existing = panelChromeView, existing.superview === contentView {
+            chrome = existing
+        } else {
+            panelChromeView?.removeFromSuperview()
+            chrome = ThemedMenuChromeView(frame: contentView.bounds)
+            chrome.autoresizingMask = [.width, .height]
+            contentView.addSubview(chrome, positioned: .above, relativeTo: nil)
+            panelChromeView = chrome
+        }
+        chrome.panelView = panel
+        chrome.theme = panelTheme
+        chrome.needsDisplay = true
+    }
+
+    func removePanelMenuChrome() {
+        panelChromeView?.removeFromSuperview()
+        panelChromeView = nil
+    }
+
     // Bar updates are deferred while the menu is open: resizing the status
     // item moves the menu's anchor, so the whole panel would jump sideways
     // on every period switch. The panel shows the live numbers meanwhile.
@@ -893,6 +1247,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             guard let self = self else { return }
             self.menuIsOpen = true
+            self.installPanelMenuChrome()
+            if self.panelChromeView == nil {
+                self.performOnMain { [weak self] in self?.installPanelMenuChrome() }
+            }
             self.sparkView?.catAnimating = self.showExperimentalCat
             self.refresh()
         }
@@ -901,6 +1259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             guard let self = self else { return }
             self.menuIsOpen = false
+            self.removePanelMenuChrome()
             self.sparkView?.catAnimating = false
             if let target = self.pendingBar {
                 self.pendingBar = nil
@@ -971,6 +1330,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cat = toggle(in: showInPanelMenu, "Animated Cat",
                          showExperimentalCat, #selector(toggleExperimentalCat))
         cat.toolTip = "Appears on the spend graph."
+        let attribution = toggle(in: showInPanelMenu, "Projects & Sessions",
+                                 showExperimentalAttribution,
+                                 #selector(toggleExperimentalAttribution))
+        attribution.toolTip = "Shows cross-agent project totals and top sessions."
+
+        let themeMenu = submenu("Theme")
+        for theme in PanelTheme.allCases {
+            if theme == .catppuccinMocha {
+                themeMenu.addItem(.sectionHeader(title: "Dark"))
+            } else if theme == .catppuccinLatte {
+                themeMenu.addItem(.separator())
+                themeMenu.addItem(.sectionHeader(title: "Light"))
+            }
+            let item = NSMenuItem(title: theme.title,
+                                  action: #selector(selectPanelTheme(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = theme.rawValue
+            item.state = theme == panelTheme ? .on : .off
+            item.image = theme.swatchImage
+            if theme == .system { item.toolTip = "Follow the macOS appearance." }
+            themeMenu.addItem(item)
+            if theme == .system { themeMenu.addItem(.separator()) }
+        }
 
         let periodRangeMenu = submenu("Period Range")
         let calendarRange = toggle(in: periodRangeMenu, "Calendar",
@@ -996,6 +1379,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // first and then visibly resize when that scan completed.
     func applyViewChange(_ key: String, _ value: Bool) {
         appDefaults.set(value, forKey: key)
+        menuSignature = ""
+        if let data = latestPanelData, data.period == period,
+           data.rangeStyle == periodRangeStyle {
+            rebuildMenu(total: data.total, sources: data.sources)
+        } else {
+            refresh()
+        }
+    }
+
+    @objc func selectPanelTheme(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let selectedTheme = PanelTheme(rawValue: rawValue),
+              selectedTheme != panelTheme
+        else { return }
+        panelTheme = selectedTheme
+        appDefaults.set(selectedTheme.rawValue, forKey: "theme")
+        panelMenu.appearance = selectedTheme.menuAppearance
+        panelView?.theme = selectedTheme
         menuSignature = ""
         if let data = latestPanelData, data.period == period,
            data.rangeStyle == periodRangeStyle {
@@ -1036,6 +1437,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showExperimentalCat.toggle()
         applyViewChange("showExperimentalCat", showExperimentalCat)
     }
+    @objc func toggleExperimentalAttribution() {
+        showExperimentalAttribution.toggle()
+        applyViewChange("showExperimentalAttribution", showExperimentalAttribution)
+    }
     @objc func toggleProviderIcons() { showProviderIcons.toggle(); applyViewChange("showProviderIcons", showProviderIcons) }
     @objc func toggleFullModelNames() { showFullModelNames.toggle(); applyViewChange("showFullModelNames", showFullModelNames) }
 
@@ -1068,13 +1473,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // that control into the exported image. Alpha preserves its layout.
         let screenshotButtonAlpha = screenshotButton?.alphaValue
         screenshotButton?.alphaValue = 0
+        panel.usesSnapshotStyle = true
         defer {
+            panel.usesSnapshotStyle = false
             if let alpha = screenshotButtonAlpha { screenshotButton?.alphaValue = alpha }
         }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         panel.effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.windowBackgroundColor.setFill()
+            panelTheme.palette.background.setFill()
             NSBezierPath(roundedRect: panel.bounds, xRadius: 12, yRadius: 12).fill()
             panel.displayIgnoringOpacity(panel.bounds, in: context)
         }
@@ -1244,17 +1651,211 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return out
     }
 
+    struct AttributedSession {
+        let source: String
+        let stats: SessionStats
+        var key: String { "\(source)/\(stats.id)" }
+    }
+
+    struct AttributedProject {
+        let key: String
+        let path: String?
+        var agg: Agg
+        var sessionCount: Int
+        var lastActivity: Date
+    }
+
+    struct AttributionData {
+        let projects: [AttributedProject]
+        let sessions: [AttributedSession]
+    }
+
+    func attributionData(_ sources: [SourceStats]) -> AttributionData {
+        let sessions = sources.flatMap { source in
+            source.sessions.values.compactMap { session -> AttributedSession? in
+                let usage = session.agg
+                guard usage.cost > 0 || usage.contextTotal > 0 || usage.output > 0 else { return nil }
+                return AttributedSession(source: source.name, stats: session)
+            }
+        }
+        var byProject: [String: AttributedProject] = [:]
+        for session in sessions {
+            let path = session.stats.projectPath
+            let key = path ?? "\u{0}unknown-project"
+            if var project = byProject[key] {
+                project.agg.add(session.stats.agg)
+                project.sessionCount += 1
+                project.lastActivity = max(project.lastActivity, session.stats.lastActivity)
+                byProject[key] = project
+            } else {
+                byProject[key] = AttributedProject(key: key, path: path,
+                                                   agg: session.stats.agg, sessionCount: 1,
+                                                   lastActivity: session.stats.lastActivity)
+            }
+        }
+        func usageComesFirst(_ lhs: Agg, _ rhs: Agg) -> Bool {
+            if lhs.cost != rhs.cost { return lhs.cost > rhs.cost }
+            return lhs.contextTotal + lhs.output > rhs.contextTotal + rhs.output
+        }
+        let projects = byProject.values.sorted {
+            if $0.agg != $1.agg { return usageComesFirst($0.agg, $1.agg) }
+            return $0.lastActivity > $1.lastActivity
+        }
+        let rankedSessions = sessions.sorted {
+            if $0.stats.agg != $1.stats.agg {
+                return usageComesFirst($0.stats.agg, $1.stats.agg)
+            }
+            return $0.stats.lastActivity > $1.stats.lastActivity
+        }
+        return AttributionData(projects: projects, sessions: rankedSessions)
+    }
+
+    func projectName(_ path: String?) -> String {
+        guard let path else { return "Unknown Project" }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return name.isEmpty ? path : name
+    }
+
+    func sessionName(_ session: AttributedSession) -> String {
+        if let title = session.stats.title {
+            return title.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }
+        let project = projectName(session.stats.projectPath)
+        let shortProject = project.count > 18 ? String(project.prefix(17)) + "…" : project
+        let id = session.stats.id
+        let shortID = id.count > 8 ? String(id.prefix(8)) : id
+        return "\(shortProject) · \(shortID)"
+    }
+
+    func sessionDetail(_ session: AttributedSession) -> String {
+        let formatter = DateFormatter()
+        if Calendar.current.isDateInToday(session.stats.lastActivity) {
+            formatter.timeStyle = .short
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        }
+        return "\(session.source) · \(formatter.string(from: session.stats.lastActivity))"
+    }
+
+    @objc func openAttributedProject(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue,
+              FileManager.default.fileExists(atPath: path) else { NSSound.beep(); return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    func sessionInvocation(_ target: SessionLaunchTarget) -> (executable: String, arguments: [String])? {
+        switch target.source.lowercased() {
+        case "claude code":
+            return ("claude", ["--resume", target.id])
+        case "codex":
+            return ("codex", ["resume", "--include-non-interactive", target.id])
+        case "opencode":
+            return ("opencode", ["--session", target.id])
+        case "pi":
+            return ("pi", ["--session", target.id])
+        default:
+            return nil
+        }
+    }
+
+    @objc func resumeAttributedSession(_ sender: NSButton) {
+        guard let key = sender.identifier?.rawValue,
+              let target = sessionLaunchTargets[key],
+              let invocation = sessionInvocation(target)
+        else { NSSound.beep(); return }
+
+        var isDirectory: ObjCBool = false
+        let projectExists = target.projectPath.map {
+            FileManager.default.fileExists(atPath: $0, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        } ?? false
+        let workingDirectory = projectExists
+            ? target.projectPath! : FileManager.default.homeDirectoryForCurrentUser.path
+        let command = ([invocation.executable] + invocation.arguments)
+            .map(shellQuote).joined(separator: " ")
+        let missingMessage = "Token Bar could not find '\(invocation.executable)' in your shell PATH."
+        let script = """
+        #!/bin/zsh
+        for profile in "$HOME/.zprofile" "$HOME/.zshrc"; do
+          [[ -r "$profile" ]] && source "$profile" >/dev/null 2>&1 || true
+        done
+        export PATH="$HOME/.local/bin:$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+        cd -- \(shellQuote(workingDirectory))
+        if ! command -v \(shellQuote(invocation.executable)) >/dev/null 2>&1; then
+          print -r -- \(shellQuote(missingMessage))
+          printf '\nPress Return to close.'
+          read -r
+          exit 127
+        fi
+        exec \(command)
+        """
+
+        let fm = FileManager.default
+        let cacheRoot = fm.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? fm.temporaryDirectory
+        let directory = cacheRoot.appendingPathComponent("Token Bar/Session Launchers",
+                                                         isDirectory: true)
+        do {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            if let oldLaunchers = try? fm.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) {
+                let cutoff = Date().addingTimeInterval(-86_400)
+                for url in oldLaunchers {
+                    let modified = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey]).contentModificationDate
+                    if modified.map({ $0 < cutoff }) ?? true { try? fm.removeItem(at: url) }
+                }
+            }
+            let launcher = directory.appendingPathComponent(
+                "Resume-\(UUID().uuidString).command", isDirectory: false)
+            try Data(script.utf8).write(to: launcher, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: launcher.path)
+            guard NSWorkspace.shared.open(launcher) else { throw CocoaError(.fileNoSuchFile) }
+        } catch {
+            NSSound.beep()
+        }
+    }
+
     // Rebuild the panel only when its row structure changes (a new model or
     // source); otherwise update fields and period controls in place: no flicker.
     func rebuildMenu(total: Agg, sources: [SourceStats]) {
         ensureMenuSkeleton()
         let active = activeSources(sources)
-        // Structure, not live ordering or period, determines whether the panel
-        // needs rebuilding. Recreating every view on a period switch caused a
-        // visible flash and let the menu recalculate its position.
-        let signature = active
+        // Structure and presentation—not live ordering or period—determine
+        // whether the panel needs rebuilding. Recreating every view on a period
+        // switch caused a visible flash and let the menu recalculate its position.
+        let sourceSignature = active
             .map { "\($0.name):\($0.perModel.keys.sorted().joined(separator: ","))" }
             .sorted()
+            .joined(separator: "|")
+        let attributionSignature: String
+        if showExperimentalAttribution {
+            let attribution = attributionData(active)
+            let metadata = active.flatMap { source in
+                source.sessions.values.map {
+                    "\(source.name):\($0.id):\($0.projectPath ?? ""):\($0.title ?? "")"
+                }
+            }.sorted().joined(separator: "|")
+            // Unlike the model table, these rows explicitly promise a ranking;
+            // rebuild if the top entries change, then update their values in place.
+            let projectOrder = attribution.projects.prefix(4).map(\.key).joined(separator: "|")
+            let sessionOrder = attribution.sessions.prefix(4).map(\.key).joined(separator: "|")
+            attributionSignature = "\(metadata);projects:\(projectOrder);sessions:\(sessionOrder)"
+        } else {
+            attributionSignature = ""
+        }
+        let signature = [panelTheme.rawValue,
+                         "graph:\(showGraph)",
+                         "icons:\(showProviderIcons)",
+                         "names:\(showFullModelNames)",
+                         "cat:\(showExperimentalCat)",
+                         "attribution:\(showExperimentalAttribution)",
+                         sourceSignature,
+                         attributionSignature]
             .joined(separator: "|")
         if signature == menuSignature && !statFields.isEmpty {
             updateFields(total: total, active: active)
@@ -1291,10 +1892,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stickyWidth = max(stickyWidth, ceil(contentWidth + insetWidth))
         let size = NSSize(width: stickyWidth, height: ceil(fitting.height))
         if size != panel.frame.size { panel.setFrameSize(size) }
+        panelChromeView?.needsDisplay = true
     }
 
     func updatePeriodControls() {
         periodField?.stringValue = period.title(rangeStyle: periodRangeStyle)
+        let colors = panelTheme.palette
         for button in periodButtons {
             guard let buttonPeriod = Period(rawValue: button.tag) else { continue }
             let title = buttonPeriod.title(rangeStyle: periodRangeStyle)
@@ -1306,7 +1909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .font: NSFont.systemFont(ofSize: 11,
                                              weight: buttonPeriod == period ? .semibold : .regular),
                     .foregroundColor: buttonPeriod == period
-                        ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
+                        ? panelTheme.selectionColor : colors.muted,
                 ])
         }
     }
@@ -1329,16 +1932,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 setField("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100))
             }
         }
+        if showExperimentalAttribution {
+            let attribution = attributionData(active)
+            for project in attribution.projects {
+                let prefix = "Attribution/Project/\(project.key)"
+                setField("\(prefix)/Spend", fmtMoney(project.agg.cost))
+                setField("\(prefix)/Tokens",
+                         fmtTokens(project.agg.contextTotal + project.agg.output))
+                setField("\(prefix)/Sessions", "\(project.sessionCount)")
+            }
+            for session in attribution.sessions {
+                let prefix = "Attribution/Session/\(session.key)"
+                setField("\(prefix)/Detail", sessionDetail(session))
+                setField("\(prefix)/Spend", fmtMoney(session.stats.agg.cost))
+                setField("\(prefix)/Tokens",
+                         fmtTokens(session.stats.agg.contextTotal + session.stats.agg.output))
+            }
+        }
         resizePanel()  // in case a value grew wider than the panel was sized for
     }
 
     // The panel container is created once; its content is rebuilt in place so
     // the menu can stay open.
     func ensureMenuSkeleton() {
+        panelMenu.appearance = panelTheme.menuAppearance
         guard panelMenu.items.isEmpty else { return }
         panelMenu.autoenablesItems = false
 
-        let panel = NSStackView()
+        let panel = ThemedPanelView()
+        panel.theme = panelTheme
         panel.orientation = .vertical
         panel.alignment = .leading
         panel.spacing = 0
@@ -1352,23 +1974,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildPanelContent(total: Agg, active: [SourceStats]) {
         guard let panel = panelView else { return }
+        panel.theme = panelTheme
+        let colors = panelTheme.palette
         if let sparkView { savedCatMotionState = sparkView.motionState() }
         for v in panel.arrangedSubviews {
             panel.removeArrangedSubview(v)
             v.removeFromSuperview()
         }
         statFields.removeAll()
+        sessionLaunchTargets.removeAll()
         periodField = nil
         periodButtons.removeAll()
         screenshotButton = nil
         minimumContentWidth = 0
 
-        func label(_ key: String?, _ text: String, size: CGFloat, weight: NSFont.Weight = .regular,
-                   color: NSColor = .labelColor, mono: Bool = false, align: NSTextAlignment = .left) -> NSTextField {
+        func label(_ key: String?, _ text: String, size: CGFloat,
+                   weight: NSFont.Weight = .regular, color: NSColor? = nil,
+                   mono: Bool = false, align: NSTextAlignment = .left) -> NSTextField {
             let f = NSTextField(labelWithString: text)
             f.font = mono ? .monospacedDigitSystemFont(ofSize: size, weight: weight)
                           : .systemFont(ofSize: size, weight: weight)
-            f.textColor = color
+            f.textColor = color ?? colors.primary
             f.alignment = align
             if align == .right {
                 // Keep metric columns compact. Any width reserved for full
@@ -1384,7 +2010,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let nameLabel = label(nil, name, size: 12)
             nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
             guard showProviderIcons else { return nameLabel }
-            let row = NSStackView(views: [ProviderBadgeView(provider: provider), nameLabel])
+            let row = NSStackView(views: [ProviderBadgeView(provider: provider, theme: panelTheme),
+                                          nameLabel])
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 5
@@ -1394,14 +2021,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
         let periodLabel = label(nil, period.title(rangeStyle: periodRangeStyle), size: 12,
-                                color: .secondaryLabelColor)
+                                color: colors.secondary)
         periodField = periodLabel
 
         let switcher = NSStackView()
         switcher.orientation = .horizontal
         switcher.spacing = 9
         for p in Period.allCases {
-            let b = NSButton(title: p.letter, target: self, action: #selector(periodClicked(_:)))
+            let b = NSButton(title: p.letter, target: self,
+                             action: #selector(periodClicked(_:)))
             b.isBordered = false
             b.tag = p.rawValue
             let title = p.title(rangeStyle: periodRangeStyle)
@@ -1411,18 +2039,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 string: p.letter,
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 11, weight: p == period ? .semibold : .regular),
-                    .foregroundColor: p == period ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor,
+                    .foregroundColor: p == period ? panelTheme.selectionColor : colors.muted,
                 ])
             switcher.addArrangedSubview(b)
             periodButtons.append(b)
         }
 
-        let capture = NSButton(image: NSImage(systemSymbolName: "camera",
-                                               accessibilityDescription: "Copy Panel Screenshot")!,
-                               target: self, action: #selector(copyPanelScreenshot))
+        let capture = NSButton(
+            image: NSImage(systemSymbolName: "camera",
+                           accessibilityDescription: "Copy Panel Screenshot")!,
+            target: self, action: #selector(copyPanelScreenshot))
         capture.isBordered = false
         capture.controlSize = .small
-        capture.contentTintColor = .tertiaryLabelColor
+        capture.contentTintColor = colors.muted
         capture.toolTip = "Copy Panel Screenshot"
         capture.setAccessibilityLabel("Copy Panel Screenshot")
         screenshotButton = capture
@@ -1442,7 +2071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setCustomSpacing(2, after: headerRow)
 
         panel.addArrangedSubview(label("Tokens", tokensLine(total), size: 12,
-                                       color: .secondaryLabelColor, mono: true))
+                                       color: colors.secondary, mono: true))
 
         sparkView = nil
         if active.isEmpty {
@@ -1452,7 +2081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.setCustomSpacing(3, after: panel.arrangedSubviews.last!)
             let emptyMessage = label(nil,
                                      "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi.",
-                                     size: 12, color: .secondaryLabelColor)
+                                     size: 12, color: colors.secondary)
             emptyMessage.maximumNumberOfLines = 2
             emptyMessage.lineBreakMode = .byWordWrapping
             panel.addArrangedSubview(emptyMessage)
@@ -1468,6 +2097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let spark = SparkBarView()
             spark.values = totalBuckets(active)
             spark.caption = period.caption
+            spark.theme = panelTheme
             spark.axis = period.axis(cal: cal, now: Date(), rangeStyle: periodRangeStyle)
             spark.catEnabled = showExperimentalCat
             if let savedCatMotionState { spark.restoreMotionState(savedCatMotionState) }
@@ -1489,10 +2119,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 headerRowIndices.append(rows.count)
                 // Column captions ride on the harness header row
                 func caption(_ t: String) -> NSTextField {
-                    label(nil, t, size: 10, color: .tertiaryLabelColor, align: .right)
+                    label(nil, t, size: 10, color: colors.muted, align: .right)
                 }
                 rows.append([label("\(s.name)/Header", headerTitle(for: s), size: 10, weight: .medium,
-                                   color: .tertiaryLabelColor),
+                                   color: colors.muted),
                              caption("spend"), caption("in"), caption("out"), caption("hit")])
                 for (model, a) in s.perModel.sorted(by: { $0.value.cost > $1.value.cost }) {
                     let marker = s.unknownPricing.contains(model) ? "~" : ""
@@ -1500,13 +2130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     rows.append([
                         modelLabel(provider: provider(for: s, model: model), name: displayName),
                         label("\(s.name)/\(model)/Spend", marker + fmtMoney(a.cost), size: 12,
-                              color: .secondaryLabelColor, mono: true, align: .right),
+                              color: colors.secondary, mono: true, align: .right),
                         label("\(s.name)/\(model)/Input", fmtTokens(a.input), size: 12,
-                              color: .secondaryLabelColor, mono: true, align: .right),
+                              color: colors.secondary, mono: true, align: .right),
                         label("\(s.name)/\(model)/Output", fmtTokens(a.output), size: 12,
-                              color: .secondaryLabelColor, mono: true, align: .right),
+                              color: colors.secondary, mono: true, align: .right),
                         label("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100), size: 12,
-                              color: .secondaryLabelColor, mono: true, align: .right),
+                              color: colors.secondary, mono: true, align: .right),
                     ])
                 }
             }
@@ -1531,7 +2161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let models = active.flatMap { $0.perModel.keys }
             func fullModelLabelWidth(_ name: String) -> CGFloat {
                 let nameLabel = label(nil, name, size: 12)
-                let row = NSStackView(views: [ProviderBadgeView(provider: ""), nameLabel])
+                let row = NSStackView(views: [ProviderBadgeView(provider: "", theme: panelTheme),
+                                              nameLabel])
                 row.orientation = .horizontal
                 row.alignment = .centerY
                 row.spacing = 5
@@ -1551,6 +2182,221 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             grid.setContentHuggingPriority(.defaultLow, for: .horizontal)
             grid.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
             grid.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
+        }
+
+        if showExperimentalAttribution {
+            let attribution = attributionData(active)
+            let projectLimit = 4
+            let sessionLimit = 4
+
+            func clipped(_ text: String, limit: Int = 30) -> String {
+                text.count > limit ? String(text.prefix(limit - 1)) + "…" : text
+            }
+            func attributionCaption(_ text: String) -> NSTextField {
+                label(nil, text, size: 10, color: colors.muted, align: .right)
+            }
+            func emptyCell() -> NSTextField { label(nil, "", size: 10) }
+            func flexibleCell() -> NSView {
+                let view = NSView()
+                view.setContentHuggingPriority(.init(1), for: .horizontal)
+                view.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+                return view
+            }
+            func metricWidth(caption: String, sample: String) -> CGFloat {
+                let captionWidth = attributionCaption(caption).fittingSize.width
+                let valueWidth = label(nil, sample, size: 12, color: colors.secondary,
+                                       mono: true, align: .right).fittingSize.width
+                return ceil(max(captionWidth, valueWidth))
+            }
+            // Fixed left/metric columns plus one flexible middle column make
+            // the visual split deterministic: labels stay at the leading edge,
+            // metrics stay at the trailing edge, and only the empty gap grows.
+            let projectLabelWidth: CGFloat = 180
+            let sessionInfoWidth: CGFloat = 225
+            let spendWidth = metricWidth(caption: "spend", sample: "$999999.99")
+            let tokensWidth = metricWidth(caption: "tokens", sample: "9999.9M")
+            let sessionsWidth = metricWidth(caption: "sessions", sample: "9999")
+
+            func folderLink(title: String, path: String?,
+                            truncation: NSLineBreakMode) -> NSButton {
+                let pathExists = path.map {
+                    FileManager.default.fileExists(atPath: $0)
+                } ?? false
+                let button = NSButton(
+                    title: title,
+                    target: pathExists ? self : nil,
+                    action: pathExists ? #selector(openAttributedProject(_:)) : nil)
+                if pathExists, let path {
+                    button.identifier = NSUserInterfaceItemIdentifier(path)
+                }
+                button.isBordered = false
+                button.isEnabled = pathExists
+                button.alignment = .left
+                let symbol: String
+                if pathExists {
+                    symbol = "folder"
+                } else if path != nil {
+                    symbol = "folder.badge.minus"
+                } else {
+                    symbol = "questionmark.folder"
+                }
+                button.image = NSImage(systemSymbolName: symbol,
+                                       accessibilityDescription: pathExists
+                                           ? "Open Project" : "Folder Unavailable")
+                button.imagePosition = .imageLeading
+                button.contentTintColor = colors.muted
+                button.attributedTitle = NSAttributedString(
+                    string: title,
+                    attributes: [.font: NSFont.systemFont(ofSize: 12),
+                                 .foregroundColor: pathExists ? colors.primary : colors.secondary])
+                if let path {
+                    button.toolTip = pathExists ? "Open \(path)" : "Folder no longer exists: \(path)"
+                } else {
+                    button.toolTip = "No working directory metadata was recorded."
+                }
+                button.setAccessibilityLabel(pathExists
+                    ? "Open project folder for \(title)" : "\(title), folder unavailable")
+                button.lineBreakMode = truncation
+                button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                return button
+            }
+
+            func projectCell(_ project: AttributedProject) -> NSView {
+                folderLink(title: clipped(projectName(project.path)), path: project.path,
+                           truncation: .byTruncatingTail)
+            }
+
+            func sessionFolderLink(_ session: AttributedSession) -> NSButton {
+                let button = folderLink(title: "", path: session.stats.projectPath,
+                                        truncation: .byClipping)
+                button.imagePosition = .imageOnly
+                button.setAccessibilityLabel("Project folder for session \(session.stats.id)")
+                button.setContentHuggingPriority(.required, for: .horizontal)
+                button.setContentCompressionResistancePriority(.required, for: .horizontal)
+                button.widthAnchor.constraint(equalToConstant: 16).isActive = true
+                return button
+            }
+
+            func sessionLink(_ session: AttributedSession) -> NSButton {
+                let rawName = sessionName(session)
+                let title = clipped(rawName)
+                let button = NSButton(title: title, target: self,
+                                      action: #selector(resumeAttributedSession(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier(session.key)
+                sessionLaunchTargets[session.key] = SessionLaunchTarget(
+                    source: session.source, id: session.stats.id,
+                    projectPath: session.stats.projectPath)
+                button.isBordered = false
+                button.alignment = .left
+                button.attributedTitle = NSAttributedString(
+                    string: title,
+                    attributes: [.font: NSFont.systemFont(ofSize: 12),
+                                 .foregroundColor: colors.primary])
+                button.toolTip = "Resume in \(session.source)\nSession: \(session.stats.id)"
+                button.setAccessibilityLabel("Resume \(session.source) session \(rawName)")
+                button.lineBreakMode = .byTruncatingMiddle
+                button.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                return button
+            }
+
+            var projectRows: [[NSView]] = [[
+                label(nil, "PROJECTS · \(attribution.projects.count)", size: 10,
+                      weight: .medium, color: colors.muted),
+                flexibleCell(),
+                attributionCaption("spend"),
+                attributionCaption("tokens"),
+                attributionCaption("sessions"),
+            ]]
+            for project in attribution.projects.prefix(projectLimit) {
+                let prefix = "Attribution/Project/\(project.key)"
+                projectRows.append([
+                    projectCell(project),
+                    flexibleCell(),
+                    label("\(prefix)/Spend", fmtMoney(project.agg.cost), size: 12,
+                          color: colors.secondary, mono: true, align: .right),
+                    label("\(prefix)/Tokens",
+                          fmtTokens(project.agg.contextTotal + project.agg.output), size: 12,
+                          color: colors.secondary, mono: true, align: .right),
+                    label("\(prefix)/Sessions", "\(project.sessionCount)", size: 12,
+                          color: colors.secondary, mono: true, align: .right),
+                ])
+            }
+            if attribution.projects.isEmpty {
+                projectRows.append([label(nil, "No project metadata found", size: 12,
+                                          color: colors.secondary),
+                                    flexibleCell(), emptyCell(), emptyCell(), emptyCell()])
+            }
+            let projectGrid = NSGridView(views: projectRows)
+            projectGrid.rowSpacing = 4
+            projectGrid.columnSpacing = 12
+            projectGrid.column(at: 0).width = projectLabelWidth
+            projectGrid.column(at: 0).xPlacement = .fill
+            projectGrid.column(at: 1).xPlacement = .fill
+            projectGrid.column(at: 2).width = spendWidth
+            projectGrid.column(at: 3).width = tokensWidth
+            projectGrid.column(at: 4).width = sessionsWidth
+            for column in 2..<5 { projectGrid.column(at: column).xPlacement = .trailing }
+            projectGrid.row(at: 0).bottomPadding = 2
+
+            var sessionRows: [[NSView]] = [[
+                label(nil, "TOP SESSIONS · \(attribution.sessions.count)", size: 10,
+                      weight: .medium, color: colors.muted),
+                flexibleCell(), attributionCaption("spend"), attributionCaption("tokens"),
+            ]]
+            for session in attribution.sessions.prefix(sessionLimit) {
+                let folder = sessionFolderLink(session)
+                let name = sessionLink(session)
+                let prefix = "Attribution/Session/\(session.key)"
+                let detail = label("\(prefix)/Detail", sessionDetail(session), size: 11,
+                                   color: colors.muted)
+                detail.setContentHuggingPriority(.required, for: .horizontal)
+                detail.setContentCompressionResistancePriority(.required, for: .horizontal)
+                let info = NSStackView(views: [folder, name, detail])
+                info.orientation = .horizontal
+                info.alignment = .centerY
+                info.spacing = 4
+                info.setCustomSpacing(8, after: name)
+                info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                sessionRows.append([
+                    info,
+                    flexibleCell(),
+                    label("\(prefix)/Spend", fmtMoney(session.stats.agg.cost), size: 12,
+                          color: colors.secondary, mono: true, align: .right),
+                    label("\(prefix)/Tokens",
+                          fmtTokens(session.stats.agg.contextTotal + session.stats.agg.output),
+                          size: 12, color: colors.secondary, mono: true, align: .right),
+                ])
+            }
+            if attribution.sessions.isEmpty {
+                sessionRows.append([label(nil, "No attributed sessions", size: 12,
+                                          color: colors.secondary),
+                                    flexibleCell(), emptyCell(), emptyCell()])
+            }
+            let sessionGrid = NSGridView(views: sessionRows)
+            sessionGrid.rowSpacing = 4
+            sessionGrid.columnSpacing = 12
+            sessionGrid.column(at: 0).width = sessionInfoWidth
+            sessionGrid.column(at: 0).xPlacement = .fill
+            sessionGrid.column(at: 1).xPlacement = .fill
+            sessionGrid.column(at: 2).width = spendWidth
+            sessionGrid.column(at: 3).width = tokensWidth
+            for column in 2..<4 { sessionGrid.column(at: column).xPlacement = .trailing }
+            sessionGrid.row(at: 0).bottomPadding = 2
+
+            // Both grids are deliberately the same stable minimum width. Their
+            // flexible blank columns absorb wider model tables without moving
+            // either the leading labels or trailing metrics.
+            minimumContentWidth = max(minimumContentWidth, 400)
+            panel.setCustomSpacing(18, after: panel.arrangedSubviews.last!)
+            panel.addArrangedSubview(projectGrid)
+            projectGrid.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+            projectGrid.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
+            panel.setCustomSpacing(12, after: projectGrid)
+            panel.addArrangedSubview(sessionGrid)
+            sessionGrid.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 14).isActive = true
+            sessionGrid.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
         }
 
         resizePanel()

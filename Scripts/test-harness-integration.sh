@@ -118,6 +118,7 @@ run_claude_code() {
 
     RUN_CLAUDE_CODE_INTEGRATION=1 \
     CLAUDE_CODE_INTEGRATION_PROJECTS="$home/.claude/projects" \
+    CLAUDE_CODE_INTEGRATION_WORKSPACE="$workspace" \
         swift test --package-path "$repo_root" --filter ClaudeCodeIntegrationTests
 }
 
@@ -152,6 +153,7 @@ run_codex() {
 
     RUN_CODEX_INTEGRATION=1 \
     CODEX_INTEGRATION_SESSIONS="$codex_home/sessions" \
+    CODEX_INTEGRATION_WORKSPACE="$workspace" \
         swift test --package-path "$repo_root" --filter CodexIntegrationTests
 }
 
@@ -194,6 +196,7 @@ JSON
 
     RUN_OPENCODE_INTEGRATION=1 \
     OPENCODE_INTEGRATION_DB="$home/.local/share/opencode/opencode.db" \
+    OPENCODE_INTEGRATION_WORKSPACE="$workspace" \
         swift test --package-path "$repo_root" --filter OpenCodeIntegrationTests
 }
 
@@ -241,6 +244,7 @@ JSON
 
     RUN_PI_INTEGRATION=1 \
     PI_INTEGRATION_SESSIONS="$sessions" \
+    PI_INTEGRATION_WORKSPACE="$workspace" \
         swift test --package-path "$repo_root" --filter PiIntegrationTests
 }
 

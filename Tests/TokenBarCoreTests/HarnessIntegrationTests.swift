@@ -11,6 +11,20 @@ private func integrationURL(runVariable: String, pathVariable: String,
     return URL(fileURLWithPath: path, isDirectory: isDirectory)
 }
 
+private func assertSingleAttributedSession(_ stats: SourceStats, equals aggregate: Agg,
+                                           workspaceVariable: String,
+                                           file: StaticString = #filePath,
+                                           line: UInt = #line) throws {
+    let path = try XCTUnwrap(ProcessInfo.processInfo.environment[workspaceVariable],
+                             file: file, line: line)
+    let workspace = URL(fileURLWithPath: path, isDirectory: true)
+        .standardizedFileURL.resolvingSymlinksInPath().path
+    XCTAssertEqual(stats.sessions.count, 1, file: file, line: line)
+    let session = try XCTUnwrap(stats.sessions.values.first, file: file, line: line)
+    XCTAssertEqual(session.projectPath, workspace, file: file, line: line)
+    XCTAssertEqual(session.agg, aggregate, file: file, line: line)
+}
+
 final class ClaudeCodeIntegrationTests: XCTestCase {
     func testScansSessionGeneratedByCurrentClaudeCodeCLI() throws {
         let root = try integrationURL(runVariable: "RUN_CLAUDE_CODE_INTEGRATION",
@@ -26,6 +40,8 @@ final class ClaudeCodeIntegrationTests: XCTestCase {
         XCTAssertEqual(model.cacheWrite, 111, accuracy: 1e-9)
         XCTAssertEqual(model.output, 345, accuracy: 1e-9)
         XCTAssertEqual(stats.agg, model)
+        try assertSingleAttributedSession(stats, equals: model,
+                                          workspaceVariable: "CLAUDE_CODE_INTEGRATION_WORKSPACE")
     }
 }
 
@@ -46,6 +62,8 @@ final class CodexIntegrationTests: XCTestCase {
         // Codex's output count includes 45 reasoning tokens.
         XCTAssertEqual(model.output, 345, accuracy: 1e-9)
         XCTAssertEqual(stats.agg, model)
+        try assertSingleAttributedSession(stats, equals: model,
+                                          workspaceVariable: "CODEX_INTEGRATION_WORKSPACE")
     }
 }
 
@@ -65,6 +83,8 @@ final class OpenCodeIntegrationTests: XCTestCase {
         XCTAssertEqual(model.cacheWrite, 0, accuracy: 1e-9)
         XCTAssertEqual(model.output, 345, accuracy: 1e-9)
         XCTAssertEqual(stats.agg, model)
+        try assertSingleAttributedSession(stats, equals: model,
+                                          workspaceVariable: "OPENCODE_INTEGRATION_WORKSPACE")
     }
 }
 
@@ -83,5 +103,7 @@ final class PiIntegrationTests: XCTestCase {
         XCTAssertEqual(model.cacheWrite, 0, accuracy: 1e-9)
         XCTAssertEqual(model.output, 345, accuracy: 1e-9)
         XCTAssertEqual(stats.agg, model)
+        try assertSingleAttributedSession(stats, equals: model,
+                                          workspaceVariable: "PI_INTEGRATION_WORKSPACE")
     }
 }
