@@ -115,6 +115,10 @@ private final class LaserOverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard laserVisible, origins.count == endpoints.count else { return }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        // Match the rounded menu panel so no beam appears beyond its box.
+        NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).addClip()
         for index in origins.indices {
             let beam = NSBezierPath()
             beam.move(to: origins[index])
@@ -604,11 +608,16 @@ final class SparkBarView: NSView {
     }
 
     private func updateLaserOverlay(catX: CGFloat, catY: CGFloat, at now: TimeInterval) {
-        guard let hostWindow = window, let screen = hostWindow.screen else {
+        guard let hostWindow = window else {
             hideLaserOverlay()
             return
         }
-        ensureLaserOverlay(on: screen)
+        let panelFrame = hostWindow.frame
+        guard panelFrame.width > 0, panelFrame.height > 0 else {
+            hideLaserOverlay()
+            return
+        }
+        ensureLaserOverlay(in: panelFrame)
         guard let overlay = laserOverlay else { return }
 
         let facing: CGFloat = catDirection < 0 ? -1 : 1
@@ -619,20 +628,21 @@ final class SparkBarView: NSView {
             return hostWindow.convertPoint(toScreen: windowPoint)
         }
         overlay.origins = screenOrigins.map {
-            NSPoint(x: $0.x - screen.frame.minX, y: $0.y - screen.frame.minY)
+            NSPoint(x: $0.x - panelFrame.minX, y: $0.y - panelFrame.minY)
         }
 
-        // Hold each random direction for a few display frames. Every ray is
-        // intersected with the display bounds, so it always reaches an edge.
+        // Hold each random direction for a few display frames. Rays now stop at
+        // the menu panel instead of extending across the display.
         let flash = Int(floor(now * 12))
         overlay.laserVisible = !flash.isMultiple(of: 4)
         func randomUnit(_ salt: Double) -> CGFloat {
             let value = sin(Double(flash) * 12.9898 + salt * 78.233) * 43_758.5453
             return CGFloat(value - floor(value))
         }
+        let laserBounds = overlay.bounds.insetBy(dx: 1, dy: 1)
         overlay.endpoints = overlay.origins.enumerated().map { index, origin in
             let angle = randomUnit(Double(index) + 0.7) * .pi * 2
-            return rayEndpoint(from: origin, angle: angle, in: overlay.bounds)
+            return rayEndpoint(from: origin, angle: angle, in: laserBounds)
         }
         overlay.colors = overlay.origins.map { _ in .systemRed }
         overlay.needsDisplay = true
@@ -650,11 +660,11 @@ final class SparkBarView: NSView {
         return NSPoint(x: origin.x + dx * distance, y: origin.y + dy * distance)
     }
 
-    private func ensureLaserOverlay(on screen: NSScreen) {
-        if let laserWindow, laserWindow.frame == screen.frame { return }
+    private func ensureLaserOverlay(in panelFrame: NSRect) {
+        if let laserWindow, laserWindow.frame == panelFrame { return }
         laserWindow?.orderOut(nil)
-        let overlay = LaserOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
-        let panel = NSPanel(contentRect: screen.frame,
+        let overlay = LaserOverlayView(frame: NSRect(origin: .zero, size: panelFrame.size))
+        let panel = NSPanel(contentRect: panelFrame,
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.backgroundColor = .clear
