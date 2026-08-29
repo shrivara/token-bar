@@ -345,9 +345,11 @@ final class OpenCodeScannerTests: FixtureTestCase {
     func testAttributesUsageThroughSessionAndProjectTables() throws {
         let repo = tmp.appendingPathComponent("repo")
         let nested = repo.appendingPathComponent("apps/client")
+        let standalone = tmp.appendingPathComponent("standalone")
         try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"),
                                                 withIntermediateDirectories: true)
-        // Leave the recorded session directory deleted: project.worktree must
+        try FileManager.default.createDirectory(at: standalone, withIntermediateDirectories: true)
+        // Leave the recorded nested directory deleted: project.worktree must
         // still preserve attribution to the repository.
 
         var db: OpaquePointer?
@@ -360,18 +362,28 @@ final class OpenCodeScannerTests: FixtureTestCase {
                 time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)
             """, nil, nil, nil)
         sqlite3_exec(db, "INSERT INTO project VALUES ('project-1','\(repo.path)')", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO project VALUES ('global','/')", nil, nil, nil)
         sqlite3_exec(db, "INSERT INTO session VALUES ('opencode-session','project-1','\(nested.path)','Refactor UI')", nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO session VALUES ('global-session','global','\(standalone.path)','Global fallback')", nil, nil, nil)
 
         let ms = Int64(Date().timeIntervalSince1970 * 1000)
-        let data = assistant(input: 90, output: 12, cost: 0)
-        let json = String(data: try JSONSerialization.data(withJSONObject: data), encoding: .utf8)!
-        var statement: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(db, "INSERT INTO message VALUES ('m1','opencode-session',\(ms),\(ms),?)", -1,
-                                          &statement, nil), SQLITE_OK)
-        defer { sqlite3_finalize(statement) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(statement, 1, json, -1, transient)
-        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        func insertMessage(id: String, sessionID: String, input: Int, output: Int) throws {
+            let data = assistant(input: input, output: output, cost: 0)
+            let json = String(data: try JSONSerialization.data(withJSONObject: data),
+                              encoding: .utf8)!
+            var statement: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(
+                db, "INSERT INTO message VALUES (?, ?, \(ms), \(ms), ?)", -1,
+                &statement, nil), SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, id, -1, transient)
+            sqlite3_bind_text(statement, 2, sessionID, -1, transient)
+            sqlite3_bind_text(statement, 3, json, -1, transient)
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        }
+        try insertMessage(id: "m1", sessionID: "opencode-session", input: 90, output: 12)
+        try insertMessage(id: "m2", sessionID: "global-session", input: 7, output: 3)
 
         let stats = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: nil)
         let session = try XCTUnwrap(stats.sessions["opencode-session"])
@@ -379,7 +391,14 @@ final class OpenCodeScannerTests: FixtureTestCase {
         XCTAssertEqual(session.title, "Refactor UI")
         XCTAssertEqual(session.agg.input, 90)
         XCTAssertEqual(session.agg.output, 12)
-        XCTAssertEqual(session.agg, stats.agg)
+
+        let globalSession = try XCTUnwrap(stats.sessions["global-session"])
+        XCTAssertEqual(globalSession.projectPath, standalone.path)
+        XCTAssertEqual(globalSession.title, "Global fallback")
+        XCTAssertEqual(globalSession.agg.input, 7)
+        XCTAssertEqual(globalSession.agg.output, 3)
+        XCTAssertEqual(stats.agg.input, 97)
+        XCTAssertEqual(stats.agg.output, 15)
     }
 }
 

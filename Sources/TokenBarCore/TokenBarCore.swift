@@ -856,10 +856,14 @@ private func openCodeSessionMetadata(_ db: OpaquePointer) -> [String: OpenCodeSe
         let title = sqliteString(statement, 2)
         let projectID = sqliteString(statement, 3)
         // The project worktree survives sessions launched from nested or later
-        // deleted directories, so prefer it when OpenCode recorded both.
-        sessions[id] = OpenCodeSessionMetadata(cwd: projectID.flatMap { projectPaths[$0] }
-                                                   ?? directory,
-                                               title: title)
+        // deleted directories, so prefer it when OpenCode recorded both. Its
+        // global fallback project uses "/", which is not useful attribution;
+        // retain the session directory in that case.
+        let worktree = projectID.flatMap { projectPaths[$0] }.flatMap { path in
+            URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path == "/"
+                ? nil : path
+        }
+        sessions[id] = OpenCodeSessionMetadata(cwd: worktree ?? directory, title: title)
     }
     return sessions
 }
