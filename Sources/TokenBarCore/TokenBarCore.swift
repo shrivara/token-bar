@@ -403,23 +403,6 @@ public let piSessionsRoot = home.appendingPathComponent(".pi/agent/sessions")
 private struct ProjectPathResolver {
     private var cache: [String: String] = [:]
 
-    /// `resolvingSymlinksInPath` keeps the caller's spelling on a
-    /// case-insensitive volume. Walk existing components once so paths that
-    /// differ only in case still share a project key.
-    private func canonicalizeCase(of url: URL) -> URL {
-        guard url.path.hasPrefix("/"), fm.fileExists(atPath: url.path) else { return url }
-        var result = URL(fileURLWithPath: "/", isDirectory: true)
-        for component in url.pathComponents.dropFirst() {
-            let names = (try? fm.contentsOfDirectory(atPath: result.path)) ?? []
-            let actual = names.first(where: { $0 == component })
-                ?? names.first(where: {
-                    $0.compare(component, options: [.caseInsensitive]) == .orderedSame
-                })
-            result.appendPathComponent(actual ?? component, isDirectory: true)
-        }
-        return result
-    }
-
     mutating func resolve(_ rawPath: String?) -> String? {
         guard let rawPath else { return nil }
         let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -429,9 +412,11 @@ private struct ProjectPathResolver {
         let expanded = (trimmed as NSString).expandingTildeInPath
         let absolutePath = expanded.hasPrefix("/")
             ? expanded : home.appendingPathComponent(expanded).path
-        let normalized = URL(fileURLWithPath: absolutePath, isDirectory: true)
+        // Foundation resolves symlinks and restores the filesystem's actual
+        // component casing for paths that still exist. Deleted paths retain a
+        // stable standardized spelling and can still resolve to an ancestor Git root.
+        let cwd = URL(fileURLWithPath: absolutePath, isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
-        let cwd = canonicalizeCase(of: normalized)
         var candidate = cwd
         while true {
             if fm.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
