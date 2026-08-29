@@ -275,6 +275,25 @@ final class ThemedPanelView: NSStackView {
     }
 }
 
+// With full-size popover content this view reaches into the native chevron.
+// Filling the outer content view makes the pointed triangle use the same exact
+// palette color as the dashboard without touching AppKit's private view tree.
+final class ThemedPopoverContentView: NSView {
+    var theme: PanelTheme = .system {
+        didSet { if theme != oldValue { needsDisplay = true } }
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if theme != .system {
+            theme.palette.background.setFill()
+            NSBezierPath(rect: bounds).fill()
+        }
+        super.draw(dirtyRect)
+    }
+}
+
 // NSPopover permits normal cursor tracking (unlike NSMenu). Keep the standard
 // cursor rectangle and reassert it during movement because the popover's native
 // chrome can restore the arrow after the initial enter event.
@@ -1069,6 +1088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var sparkView: SparkBarView?
     fileprivate var savedCatMotionState: CatMotionState?
     let panelPopover = NSPopover()
+    var panelContentView: ThemedPopoverContentView?
     var panelView: ThemedPanelView?
     var panelScrollView: NSScrollView?
     var periodField: NSTextField?
@@ -1129,6 +1149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panelPopover.behavior = .transient
         panelPopover.animates = true
+        panelPopover.hasFullSizeContent = true
         panelPopover.delegate = self
         panelPopover.appearance = panelTheme.chromeAppearance
         ensurePanelSkeleton()
@@ -1209,7 +1230,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         panelIsOpen = true
         statusItem.button?.highlight(true)
         sparkView?.catAnimating = showExperimentalCat
+        // Full-size content reports its chevron/rounded-corner safe area once
+        // AppKit creates the popover window. Account for it before presentation.
+        resizePanel()
         refresh()
+    }
+
+    func popoverDidShow(_ notification: Notification) {
+        // Recheck after AppKit's final layout in case the preferred edge changed.
+        resizePanel()
+        scrollPanelToTop()
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -1381,6 +1411,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         panelTheme = selectedTheme
         appDefaults.set(selectedTheme.rawValue, forKey: "theme")
         panelPopover.appearance = selectedTheme.chromeAppearance
+        panelContentView?.appearance = selectedTheme.chromeAppearance
+        panelContentView?.theme = selectedTheme
         panelView?.appearance = selectedTheme.chromeAppearance
         panelView?.theme = selectedTheme
         panelSignature = ""
@@ -1888,9 +1920,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let panelSize = NSSize(width: stickyWidth, height: ceil(fitting.height))
         if panelSize != panel.frame.size { panel.setFrameSize(panelSize) }
 
-        let visibleHeight = min(panelSize.height, maximumPanelHeight())
-        panelScrollView?.hasVerticalScroller = panelSize.height > visibleHeight + 0.5
-        let popoverSize = NSSize(width: panelSize.width, height: visibleHeight)
+        // Full-size content paints the native chevron, while the safe area keeps
+        // controls out of the chevron and rounded corners. Include those insets
+        // in the outer size so they do not clip or silently shorten the panel.
+        let safeInsets = panelContentView?.safeAreaInsets ?? NSEdgeInsets()
+        let horizontalChrome = safeInsets.left + safeInsets.right
+        let verticalChrome = safeInsets.top + safeInsets.bottom
+        let visiblePanelHeight = min(panelSize.height,
+                                     max(1, maximumPanelHeight() - verticalChrome))
+        panelScrollView?.hasVerticalScroller = panelSize.height > visiblePanelHeight + 0.5
+        let popoverSize = NSSize(width: panelSize.width + horizontalChrome,
+                                 height: visiblePanelHeight + verticalChrome)
+        if panelPopover.contentViewController?.preferredContentSize != popoverSize {
+            panelPopover.contentViewController?.preferredContentSize = popoverSize
+        }
         if panelPopover.contentSize != popoverSize {
             panelPopover.contentSize = popoverSize
         }
@@ -1981,8 +2024,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         scrollView.documentView = panel
         panelScrollView = scrollView
 
+        let contentView = ThemedPopoverContentView()
+        contentView.theme = panelTheme
+        contentView.appearance = panelTheme.chromeAppearance
+        contentView.addSubview(scrollView)
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: contentView.safeAreaLayoutGuide.bottomAnchor),
+        ])
+        panelContentView = contentView
+
         let controller = NSViewController()
-        controller.view = scrollView
+        controller.view = contentView
         panelPopover.contentViewController = controller
     }
 
