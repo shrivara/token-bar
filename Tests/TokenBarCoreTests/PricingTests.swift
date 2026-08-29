@@ -10,6 +10,11 @@ final class PricingTests: XCTestCase {
         XCTAssertEqual(claudeRates(for: "claude-haiku-4-5-20251001"), Rates(inPerM: 1, outPerM: 5))
     }
 
+    func testBundledCatalogIncludesOpenCodeModePrices() {
+        XCTAssertEqual(claudeRates(for: "claude-opus-4-8-fast"),
+                       Rates(inPerM: 10, outPerM: 50, cacheReadPerM: 1, cacheWritePerM: 12.5))
+    }
+
     func testUnknownModelsReturnNil() {
         XCTAssertNil(claudeRates(for: "gpt-5"))
         XCTAssertNil(claudeRates(for: "claude-zeta-7"))

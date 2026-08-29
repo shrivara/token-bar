@@ -276,14 +276,31 @@ private func providerCandidates(_ provider: String) -> [String] {
 
 /// Gateways can prepend routing namespaces to model ids. Keep the complete id
 /// first, then expose progressively shorter suffixes at namespace boundaries.
-/// Catalog lookup makes this generic: no provider or model prefix is assumed.
-private func modelCandidates(_ model: String) -> [String] {
+private func namespaceCandidates(_ model: String) -> [String] {
     var candidates = [model]
     for separator in model.indices where "/.".contains(model[separator]) {
         let start = model.index(after: separator)
         guard start < model.endIndex else { continue }
         let candidate = String(model[start...])
         if !candidates.contains(candidate) { candidates.append(candidate) }
+    }
+    return candidates
+}
+
+/// Preserve the complete model (including modes such as `-fast`) while removing
+/// routing namespaces. Only if none of those match, progressively remove
+/// trailing hyphen components and repeat. Thus an exact mode-specific catalog
+/// price wins over its base model, while unknown qualifiers can still fall back.
+private func modelCandidates(_ model: String) -> [String] {
+    var candidates: [String] = []
+    var qualified = model
+    while true {
+        for candidate in namespaceCandidates(qualified) where !candidates.contains(candidate) {
+            candidates.append(candidate)
+        }
+        guard let separator = qualified.lastIndex(of: "-") else { break }
+        qualified = String(qualified[..<separator])
+        if qualified.isEmpty { break }
     }
     return candidates
 }
@@ -297,8 +314,8 @@ private func catalogPrice(_ usage: PricedUsage, provider: String, model: String,
     // Resolution order is exact-first and deterministic:
     // 1. The normalized provider and complete model id.
     // 2. The complete model id under progressively less-qualified providers.
-    // 3. Progressively shorter model suffixes (longest first), checking the
-    //    same provider sequence for each suffix.
+    // 3. Progressively less-qualified model ids (routing suffixes first, then
+    //    trailing qualifiers), checking the same provider sequence each time.
     // Resolution never searches unrelated providers. Any non-first candidate
     // is an estimate and is therefore displayed with `~`.
     for (modelIndex, modelCandidate) in models.enumerated() {

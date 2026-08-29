@@ -268,6 +268,20 @@ final class OpenCodeScannerTests: FixtureTestCase {
         XCTAssertTrue(s.unknownPricing.isEmpty)
     }
 
+    func testCatalogUsesExactOpenCodeModePriceBeforeBaseFallback() throws {
+        let json = """
+        {"providers":{"openai":{"models":{"gpt-test":{"input":1,"output":7},"gpt-test-fast":{"input":2,"output":14}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(json.utf8))
+        try makeDB(rows: [
+            (Date(), assistant(model: "gpt-test-fast", input: 0, output: 1_000_000, cost: 0)),
+        ])
+
+        let s = scanOpenCode(since: dayStart, dbPath: dbURL, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 14, accuracy: 1e-9)
+        XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
     func testCatalogPreservesBedrockProviderAndModelIdentity() throws {
         let json = """
         {"providers":{"amazon-bedrock":{"models":{"us.anthropic.claude-sonnet-4-6":{"input":3,"output":15,"cache_read":0.3,"cache_write":3.75}}},"openai":{"models":{"us.anthropic.claude-sonnet-4-6":{"input":99,"output":99}}}}}
@@ -392,6 +406,32 @@ final class CodexScannerTests: FixtureTestCase {
         let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
         XCTAssertEqual(s.agg.cost, 7, accuracy: 1e-9)
         XCTAssertTrue(s.unknownPricing.isEmpty)
+    }
+
+    func testTrailingModelModeFallsBackToBaseAndIsMarkedApproximate() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"gpt-test":{"input":1,"output":7}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let model = "gpt-test-fast"
+        try write(request(model: model), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 7, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, ["openai/\(model)"])
+    }
+
+    func testModelFallbackKeepsClosestModeWhileRemovingQualifiers() throws {
+        let catalogJSON = """
+        {"providers":{"openai":{"models":{"gpt-test-fast":{"input":1,"output":7},"gpt-test":{"input":1,"output":99}}}}}
+        """
+        let catalog = try JSONDecoder().decode(PricingCatalog.self, from: Data(catalogJSON.utf8))
+        let model = "router/gpt-test-fast-preview"
+        try write(request(model: model), to: "session.jsonl")
+
+        let s = scanCodex(since: dayStart, root: tmp, catalog: catalog)
+        XCTAssertEqual(s.agg.cost, 7, accuracy: 1e-9)
+        XCTAssertEqual(s.unknownPricing, ["openai/\(model)"])
     }
 
     func testModelFallbackUsesLongestAvailableSuffix() throws {
