@@ -417,15 +417,20 @@ private struct ProjectPathResolver {
         // stable standardized spelling and can still resolve to an ancestor Git root.
         let cwd = URL(fileURLWithPath: absolutePath, isDirectory: true)
             .standardizedFileURL.resolvingSymlinksInPath()
-        var candidate = cwd
+        // Walk path strings rather than repeatedly deleting URL components.
+        // Older Foundation versions can fail to reach a fixed point at `/`,
+        // which otherwise makes non-Git working directories loop forever.
+        var candidatePath = cwd.path
         while true {
-            if fm.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
-                cache[trimmed] = candidate.path
-                return candidate.path
+            let dotGit = (candidatePath as NSString).appendingPathComponent(".git")
+            if fm.fileExists(atPath: dotGit) {
+                cache[trimmed] = candidatePath
+                return candidatePath
             }
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path { break }
-            candidate = parent
+            if candidatePath == "/" { break }
+            let parentPath = (candidatePath as NSString).deletingLastPathComponent
+            if parentPath.isEmpty || parentPath == candidatePath { break }
+            candidatePath = parentPath
         }
         cache[trimmed] = cwd.path
         return cwd.path
