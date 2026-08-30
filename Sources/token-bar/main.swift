@@ -276,8 +276,10 @@ final class ThemedPanelView: NSStackView {
 }
 
 // With full-size popover content this view reaches into the native chevron.
-// Filling the outer content view makes the pointed triangle use the same exact
-// palette color as the dashboard without touching AppKit's private view tree.
+// Fill it for every theme so the panel and pointed triangle keep a stable
+// palette color when this menu-bar app is not the active application. Leaving
+// System transparent exposes AppKit's inactive popover material, which dims the
+// whole dashboard until the status item is highlighted again.
 final class ThemedPopoverContentView: NSView {
     var theme: PanelTheme = .system {
         didSet { if theme != oldValue { needsDisplay = true } }
@@ -286,10 +288,8 @@ final class ThemedPopoverContentView: NSView {
     override var isOpaque: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
-        if theme != .system {
-            theme.palette.background.setFill()
-            NSBezierPath(rect: bounds).fill()
-        }
+        theme.palette.background.setFill()
+        NSBezierPath(rect: bounds).fill()
         super.draw(dirtyRect)
     }
 }
@@ -1221,6 +1221,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Recheck after AppKit's final layout in case the preferred edge changed.
         resizePanel()
         scrollPanelToTop()
+        // With animations disabled, didShow runs before NSStatusBarButton ends
+        // mouse tracking and clears its pressed state. Main-queue work resumes
+        // after tracking finishes, so reassert the selection there.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panelPopover.isShown else { return }
+            self.statusItem.button?.highlight(true)
+        }
     }
 
     func popoverDidClose(_ notification: Notification) {
