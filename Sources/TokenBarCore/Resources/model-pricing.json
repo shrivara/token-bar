@@ -30947,7 +30947,7 @@
         },
         "meta-llama/llama-4-maverick": {
           "input": 0.2,
-          "output": 0.696
+          "output": 0.8
         },
         "meta-llama/llama-4-scout": {
           "cache_read": 0.055,
