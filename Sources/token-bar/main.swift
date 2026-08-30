@@ -294,45 +294,6 @@ final class ThemedPopoverContentView: NSView {
     }
 }
 
-// NSPopover permits normal cursor tracking (unlike NSMenu). Keep the standard
-// cursor rectangle and reassert it during movement because the popover's native
-// chrome can restore the arrow after the initial enter event.
-final class PointingHandButton: NSButton {
-    private var handTrackingArea: NSTrackingArea?
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        guard isEnabled else { return }
-        addCursorRect(bounds, cursor: .pointingHand)
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let handTrackingArea { removeTrackingArea(handTrackingArea) }
-        handTrackingArea = nil
-        guard isEnabled else { return }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
-            owner: self,
-            userInfo: nil)
-        addTrackingArea(area)
-        handTrackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        if isEnabled { NSCursor.pointingHand.set() }
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        if isEnabled { NSCursor.pointingHand.set() }
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        NSCursor.arrow.set()
-    }
-}
-
 struct MenuBarFields: OptionSet {
     let rawValue: Int
 
@@ -1078,6 +1039,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var timer: Timer?
     var eventStream: FSEventStreamRef?
     var pendingRefreshTimer: Timer?
+    var outsideClickMonitor: Any?
     var displayed = BarValues()
     var animTimer: Timer?
     var statFields: [String: NSTextField] = [:]
@@ -1148,7 +1110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panelPopover.behavior = .transient
-        panelPopover.animates = true
+        panelPopover.animates = false
         panelPopover.hasFullSizeContent = true
         panelPopover.delegate = self
         panelPopover.appearance = panelTheme.chromeAppearance
@@ -1223,6 +1185,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var panelIsOpen = false
     var pendingBar: BarValues?
 
+    func startOutsideClickMonitoring() {
+        guard outsideClickMonitor == nil else { return }
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.performOnMain {
+                if self.panelPopover.isShown { self.closePanel() }
+            }
+        }
+    }
+
+    func stopOutsideClickMonitoring() {
+        guard let monitor = outsideClickMonitor else { return }
+        NSEvent.removeMonitor(monitor)
+        outsideClickMonitor = nil
+    }
+
     // The status title is allowed to keep updating in the popover itself, but
     // its menu-bar representation is deferred while anchored. Changing the
     // button width would otherwise move the popover sideways during a refresh.
@@ -1230,6 +1210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         panelIsOpen = true
         statusItem.button?.highlight(true)
         sparkView?.catAnimating = showExperimentalCat
+        startOutsideClickMonitoring()
         // Full-size content reports its chevron/rounded-corner safe area once
         // AppKit creates the popover window. Account for it before presentation.
         resizePanel()
@@ -1244,6 +1225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         panelIsOpen = false
+        stopOutsideClickMonitoring()
         statusItem.button?.highlight(false)
         sparkView?.catAnimating = false
         if let target = pendingBar {
@@ -1276,6 +1258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         scrollPanelToTop()
     }
 
+    func closePanel() {
+        panelPopover.performClose(nil)
+    }
+
     // Left-click toggles the dashboard popover; right-click / control-click
     // retains a native command menu. The performClick idiom gives that menu its
     // usual status-button highlight, then .menu is cleared for the next click.
@@ -1284,12 +1270,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let wantsViewMenu = event?.type == .rightMouseUp
             || (event?.modifierFlags.contains(.control) ?? false)
         if wantsViewMenu {
-            if panelPopover.isShown { panelPopover.performClose(nil) }
+            if panelPopover.isShown { closePanel() }
             statusItem.menu = makeViewMenu()
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
         } else if panelPopover.isShown {
-            panelPopover.performClose(nil)
+            closePanel()
         } else {
             showPanel()
         }
@@ -2096,9 +2082,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let switcher = NSStackView()
         switcher.orientation = .horizontal
-        switcher.spacing = 9
+        // Use contiguous 24-point targets while preserving the compact letter
+        // spacing. The former intrinsic-size buttons left dead gaps around each
+        // glyph, making clicks hard to acquire.
+        switcher.spacing = 0
         for p in Period.allCases {
-            let b = PointingHandButton(title: p.letter, target: self,
+            let b = NSButton(title: p.letter, target: self,
                              action: #selector(periodClicked(_:)))
             b.isBordered = false
             b.tag = p.rawValue
@@ -2111,11 +2100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     .font: NSFont.systemFont(ofSize: 11, weight: p == period ? .semibold : .regular),
                     .foregroundColor: p == period ? panelTheme.selectionColor : colors.muted,
                 ])
+            b.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            b.heightAnchor.constraint(equalToConstant: 24).isActive = true
             switcher.addArrangedSubview(b)
             periodButtons.append(b)
         }
 
-        let capture = PointingHandButton(
+        let capture = NSButton(
             image: NSImage(systemSymbolName: "camera",
                            accessibilityDescription: "Copy Panel Screenshot")!,
             target: self, action: #selector(copyPanelScreenshot))
@@ -2298,7 +2289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 let pathExists = path.map {
                     FileManager.default.fileExists(atPath: $0)
                 } ?? false
-                let button = PointingHandButton(
+                let button = NSButton(
                     title: title,
                     target: pathExists ? self : nil,
                     action: pathExists ? #selector(openAttributedProject(_:)) : nil)
@@ -2357,7 +2348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             func sessionLink(_ session: AttributedSession) -> NSButton {
                 let rawName = sessionName(session)
                 let title = clipped(rawName)
-                let button = PointingHandButton(title: title, target: self,
+                let button = NSButton(title: title, target: self,
                                       action: #selector(resumeAttributedSession(_:)))
                 button.identifier = NSUserInterfaceItemIdentifier(session.key)
                 sessionLaunchTargets[session.key] = SessionLaunchTarget(
