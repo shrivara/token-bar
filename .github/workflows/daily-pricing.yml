@@ -82,7 +82,25 @@ jobs:
           git commit -m "Update model pricing and release v${VERSION}"
           git tag "v${VERSION}"
           git push --atomic origin HEAD:main "v${VERSION}"
-          echo "### Released v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+      # Tags pushed with GITHUB_TOKEN do not trigger tag-push workflows, so
+      # publish the GitHub Release directly for automated pricing releases.
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists."
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "$tag" \
+              --generate-notes \
+              --latest
+          fi
+          echo "### Released $tag" >> "$GITHUB_STEP_SUMMARY"
       - name: Trigger Homebrew tap sync
         env:
           GH_TOKEN: ${{ secrets.TAP_WORKFLOW_TOKEN }}

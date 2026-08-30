@@ -1,6 +1,8 @@
 # Releasing token-bar
 
-The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump and `vX.Y.Z` tag. An unchanged catalog does nothing. The workflow immediately starts the tap's `Sync token-bar` workflow, which updates the formula and builds bottles. The tap also checks daily as a fallback.
+The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump, `vX.Y.Z` tag, and matching GitHub Release. An unchanged catalog does nothing. The workflow immediately starts the tap's `Sync token-bar` workflow, which updates the formula and builds bottles. The tap also checks daily as a fallback.
+
+Tags pushed manually are handled by the `GitHub release` workflow, which publishes a matching GitHub Release with generated notes. Automated pricing releases publish directly because GitHub does not start tag-push workflows for tags created with `GITHUB_TOKEN`.
 
 ## One-time tap trigger setup
 
@@ -18,7 +20,12 @@ The steps below are for feature releases or workflow recovery.
     ./Scripts/bump-patch-version.sh    # or set the desired version in both files
     swift test && ./build.sh
     git commit -am "Release vX.Y.Z"
-    git push && git tag vX.Y.Z && git push origin vX.Y.Z
+    git tag vX.Y.Z
+    git push --atomic origin main vX.Y.Z
+    ```
+    The tag push automatically creates the matching GitHub Release. For workflow recovery, create it directly:
+    ```sh
+    gh release create vX.Y.Z --verify-tag --title vX.Y.Z --generate-notes --latest
     ```
 
 2. **Update the formula manually** (in `shrivara/homebrew-tap`):
