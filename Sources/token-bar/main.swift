@@ -382,6 +382,8 @@ private final class LaserOverlayView: NSView {
     var highlightColor = NSColor.white
     var laserVisible = false
 
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override func draw(_ dirtyRect: NSRect) {
         guard laserVisible, origins.count == endpoints.count else { return }
         NSGraphicsContext.saveGraphicsState()
@@ -448,7 +450,6 @@ final class SparkBarView: NSView {
     }
 
     private var catTimer: Timer?
-    private var laserWindow: NSWindow?
     private var laserOverlay: LaserOverlayView?
     private var catPosition: CGFloat = 0
     private var catDirection: CGFloat = 1
@@ -468,7 +469,7 @@ final class SparkBarView: NSView {
 
     deinit {
         catTimer?.invalidate()
-        laserWindow?.orderOut(nil)
+        laserOverlay?.removeFromSuperview()
     }
 
     // Match the display refresh cadence for smooth tiny-glyph motion. The timer
@@ -719,7 +720,7 @@ final class SparkBarView: NSView {
         let catAlpha: CGFloat = theme == .system ? 0.78 : 0.82
         let catColor = theme.palette.primary.withAlphaComponent(catAlpha)
 
-        if action == .zoom, !reduceMotion {
+        if action == .zoom, !reduceMotion, catAnimating, window?.isVisible == true {
             updateLaserOverlay(catX: catX, catY: catY, at: now)
         } else {
             hideLaserOverlay()
@@ -888,31 +889,33 @@ final class SparkBarView: NSView {
     }
 
     private func updateLaserOverlay(catX: CGFloat, catY: CGFloat, at now: TimeInterval) {
-        guard let hostWindow = window else {
+        guard catAnimating, window?.isVisible == true,
+              let container = laserContainerView() else {
             hideLaserOverlay()
             return
         }
-        let panelFrame = hostWindow.frame
-        guard panelFrame.width > 0, panelFrame.height > 0 else {
+        container.layoutSubtreeIfNeeded()
+        let panelBounds = container.safeAreaRect
+        guard panelBounds.width > 0, panelBounds.height > 0 else {
             hideLaserOverlay()
             return
         }
-        ensureLaserOverlay(in: panelFrame)
+        ensureLaserOverlay(in: container, frame: panelBounds)
         guard let overlay = laserOverlay else { return }
 
         let facing: CGFloat = catDirection < 0 ? -1 : 1
         let localEyes = [NSPoint(x: 2.6, y: 5), NSPoint(x: 4.15, y: 4.9)]
-        let screenOrigins = localEyes.map { eye -> NSPoint in
+        overlay.origins = localEyes.map { eye in
             let viewPoint = NSPoint(x: catX + facing * eye.x, y: catY + eye.y)
-            let windowPoint = convert(viewPoint, to: nil)
-            return hostWindow.convertPoint(toScreen: windowPoint)
+            return convert(viewPoint, to: overlay)
         }
-        overlay.origins = screenOrigins.map {
-            NSPoint(x: $0.x - panelFrame.minX, y: $0.y - panelFrame.minY)
+        guard overlay.origins.allSatisfy(overlay.bounds.contains) else {
+            hideLaserOverlay()
+            return
         }
 
-        // Hold each random direction for a few display frames. Rays now stop at
-        // the dashboard instead of extending across the display.
+        // Hold each random direction for a few display frames. Rays stop at the
+        // rounded dashboard body, excluding the popover pointer and shadow.
         let flash = Int(floor(now * 12))
         overlay.laserVisible = !flash.isMultiple(of: 4)
         func randomUnit(_ salt: Double) -> CGFloat {
@@ -925,8 +928,8 @@ final class SparkBarView: NSView {
             return rayEndpoint(from: origin, angle: angle, in: laserBounds)
         }
         overlay.colors = overlay.origins.map { _ in .systemRed }
+        overlay.isHidden = false
         overlay.needsDisplay = true
-        if laserWindow?.isVisible != true { laserWindow?.orderFrontRegardless() }
     }
 
     private func rayEndpoint(from origin: NSPoint, angle: CGFloat, in rect: NSRect) -> NSPoint {
@@ -940,31 +943,34 @@ final class SparkBarView: NSView {
         return NSPoint(x: origin.x + dx * distance, y: origin.y + dy * distance)
     }
 
-    private func ensureLaserOverlay(in panelFrame: NSRect) {
-        if let laserWindow, laserWindow.frame == panelFrame { return }
-        laserWindow?.orderOut(nil)
-        let overlay = LaserOverlayView(frame: NSRect(origin: .zero, size: panelFrame.size))
-        overlay.highlightColor = (theme == .system || theme.isLight) ? .white : theme.palette.primary
-        let panel = NSPanel(contentRect: panelFrame,
-                            styleMask: [.borderless, .nonactivatingPanel],
-                            backing: .buffered, defer: false)
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = false
-        panel.ignoresMouseEvents = true
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.level = .screenSaver
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        panel.contentView = overlay
+    private func laserContainerView() -> NSView? {
+        var candidate = superview
+        while let view = candidate {
+            if view is ThemedPopoverContentView { return view }
+            candidate = view.superview
+        }
+        return window?.contentView
+    }
+
+    private func ensureLaserOverlay(in container: NSView, frame: NSRect) {
+        if let overlay = laserOverlay, overlay.superview === container {
+            if overlay.frame != frame { overlay.frame = frame }
+            overlay.highlightColor = (theme == .system || theme.isLight)
+                ? .white : theme.palette.primary
+            return
+        }
+        laserOverlay?.removeFromSuperview()
+        let overlay = LaserOverlayView(frame: frame)
+        overlay.highlightColor = (theme == .system || theme.isLight)
+            ? .white : theme.palette.primary
+        overlay.isHidden = true
+        container.addSubview(overlay, positioned: .above, relativeTo: nil)
         laserOverlay = overlay
-        laserWindow = panel
     }
 
     private func hideLaserOverlay() {
-        guard laserWindow?.isVisible == true else { return }
         laserOverlay?.laserVisible = false
-        laserWindow?.orderOut(nil)
+        laserOverlay?.isHidden = true
     }
 }
 
