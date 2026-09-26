@@ -1640,20 +1640,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let rangeStyle = periodRangeStyle
         let trackDailySpend = catPeekLimit != nil
         let periodStart = period.start(cal: cal, now: now, rangeStyle: rangeStyle)
-        let spec = period.bucketSpec(start: periodStart, cal: cal, now: now,
-                                     rangeStyle: rangeStyle)
+        let periodSpec = period.bucketSpec(start: periodStart, cal: cal, now: now,
+                                           rangeStyle: rangeStyle)
+        // Year bars are monthly. Temporarily put today's entries in a separate
+        // bucket so the same scan can provide an exact daily total.
+        let spec = trackDailySpend && period == .year
+            ? BucketSpec(count: periodSpec.count + 1) { date in
+                cal.isDate(date, inSameDayAs: now) ? periodSpec.count : periodSpec.index(date)
+            }
+            : periodSpec
 
         scanQueue.async { [weak self] in
             guard let self = self else { return }
-            let sources = self.scanAll(since: periodStart, buckets: spec)
+            var sources = self.scanAll(since: periodStart, buckets: spec)
             var total = Agg()
             for s in sources { total.add(s.agg) }
             let todayCost: Double?
             if period == .day {
                 todayCost = total.cost
-            } else if trackDailySpend {
-                todayCost = self.scanAll(since: cal.startOfDay(for: now), buckets: nil)
-                    .reduce(0) { $0 + $1.agg.cost }
+            } else if trackDailySpend, let todayIndex = spec.index(now) {
+                todayCost = sources.reduce(0) { $0 + $1.buckets[todayIndex] }
+                if period == .year, let monthIndex = periodSpec.index(now) {
+                    for index in sources.indices {
+                        sources[index].buckets[monthIndex] += sources[index].buckets[todayIndex]
+                        sources[index].buckets.removeLast()
+                    }
+                }
             } else {
                 todayCost = nil
             }
