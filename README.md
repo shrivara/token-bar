@@ -8,6 +8,8 @@ A macOS menu bar app for local AI usage: spend, input/output tokens, and cache h
 
 Left-click opens a transient, scrollable dashboard popover with day, week, month, or year totals, a spend graph, model breakdowns, and screenshots. Right-click keeps a native command menu for menu bar metrics, panel display options, color themes, calendar or relative period ranges, and quit.
 
+Set **Show in Menu Bar → Cat Peek Limit** from the right-click menu to show the animated graph cat in the menu bar when today's estimated spend reaches your chosen USD amount. Clear the limit to turn it off. The graph cat remains separately controlled by its panel setting.
+
 System follows the macOS appearance. Built-in dark themes include Catppuccin Mocha, Dracula, Gruvbox Dark, Nord, Solarized Dark, and Tokyo Night; light themes include Catppuccin Latte, GitHub Light, Gruvbox Light, and Solarized Light.
 
 An experimental **Projects & Sessions** panel groups usage across agents by Git root or working directory and shows the highest-usage sessions. Folder icons open projects in Finder, while session names resume the corresponding agent session in Terminal. Enable it in the **Experimental** section under **Show in Panel**.
