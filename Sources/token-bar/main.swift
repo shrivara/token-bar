@@ -444,6 +444,7 @@ final class SparkBarView: NSView {
     var catAnimating = false {
         didSet { if catAnimating != oldValue { updateCatTimer() } }
     }
+    var onCatFrame: (() -> Void)?
 
     private enum CatAction: Equatable {
         case walk, lick, blink, zoom, pant, sit, stretch
@@ -473,7 +474,7 @@ final class SparkBarView: NSView {
     }
 
     // Match the display refresh cadence for smooth tiny-glyph motion. The timer
-    // exists only while the panel is visible; Reduce Motion keeps a static cat.
+    // runs only while this cat is active; Reduce Motion keeps a static cat.
     private func updateCatTimer() {
         catTimer?.invalidate()
         catTimer = nil
@@ -489,6 +490,7 @@ final class SparkBarView: NSView {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.advanceCat()
             self?.needsDisplay = true
+            self?.onCatFrame?()
         }
         RunLoop.main.add(timer, forMode: .common)
         catTimer = timer
@@ -702,6 +704,33 @@ final class SparkBarView: NSView {
                 + sin(.pi * segmentProgress) * hopHeight
         }
 
+        if action == .zoom, !reduceMotion, catAnimating, window?.isVisible == true {
+            updateLaserOverlay(catX: catX, catY: catY, at: now)
+        } else {
+            hideLaserOverlay()
+        }
+        drawCatShape(at: NSPoint(x: catX, y: catY), action: action, now: now,
+                     actionProgress: actionProgress, reduceMotion: reduceMotion)
+    }
+
+    func catImage() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 15), flipped: false) { [weak self] _ in
+            guard let self else { return false }
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let now = ProcessInfo.processInfo.systemUptime
+            let duration = max(self.catActionEndsAt - self.catActionStartedAt, 0.001)
+            self.drawCatShape(at: NSPoint(x: 9, y: 3),
+                              action: reduceMotion ? .walk : self.catAction, now: now,
+                              actionProgress: min(max((now - self.catActionStartedAt) / duration, 0), 1),
+                              reduceMotion: reduceMotion)
+            return true
+        }
+        image.accessibilityDescription = "Animated cat"
+        return image
+    }
+
+    private func drawCatShape(at origin: NSPoint, action: CatAction, now: TimeInterval,
+                              actionProgress: Double, reduceMotion: Bool) {
         let moving = action == .walk || action == .zoom
         let gait = Int(now * (action == .zoom ? 9 : 4)).isMultiple(of: 2)
         let actionWave = CGFloat(sin(.pi * actionProgress))
@@ -720,15 +749,9 @@ final class SparkBarView: NSView {
         let catAlpha: CGFloat = theme == .system ? 0.78 : 0.82
         let catColor = theme.palette.primary.withAlphaComponent(catAlpha)
 
-        if action == .zoom, !reduceMotion, catAnimating, window?.isVisible == true {
-            updateLaserOverlay(catX: catX, catY: catY, at: now)
-        } else {
-            hideLaserOverlay()
-        }
-
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
-        transform.translateX(by: catX, yBy: catY)
+        transform.translateX(by: origin.x, yBy: origin.y)
         if catDirection < 0, !reduceMotion { transform.scaleX(by: -1, yBy: 1) }
         transform.concat()
         catColor.setFill()
@@ -1054,6 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var latestPanelData: (period: Period, rangeStyle: PeriodRangeStyle,
                           total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
+    let statusCat = SparkBarView()
     fileprivate var savedCatMotionState: CatMotionState?
     let panelPopover = NSPopover()
     var panelContentView: ThemedPopoverContentView?
@@ -1076,6 +1100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
     var menuBarFields = MenuBarFields.load(from: appDefaults)
     var panelTheme = PanelTheme.load(from: appDefaults)
+    var catPeekLimit: Double? = {
+        guard let value = (appDefaults.object(forKey: "catPeekLimit") as? NSNumber)?.doubleValue,
+              value.isFinite, value > 0 else { return nil }
+        return value
+    }()
+    var dailySpend: Double?
     // Experimental features are opt-in; unset preferences must stay disabled.
     var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
     var showExperimentalAttribution = appDefaults.object(forKey: "showExperimentalAttribution") as? Bool ?? false
@@ -1127,6 +1157,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusItemClicked)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem.button?.imagePosition = .imageLeading
+        statusCat.onCatFrame = { [weak self] in
+            guard let self, let button = self.statusItem.button, button.image != nil else { return }
+            button.image = self.statusCat.catImage()
+        }
         refresh()
         startWatching()
         prewarmCaches()
@@ -1333,6 +1368,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menuBarToggle("Input Tokens", .inputTokens, #selector(toggleMenuBarInputTokens))
         menuBarToggle("Output Tokens", .outputTokens, #selector(toggleMenuBarOutputTokens))
         menuBarToggle("Cache Hit Rate", .cacheHitRate, #selector(toggleMenuBarCacheHitRate))
+        let catPeek = NSMenuItem(title: catPeekLimit.map { "Cat Peek Limit… (\(fmtMoney($0))/day)" }
+                                  ?? "Cat Peek Limit…", action: #selector(setCatPeekLimit),
+                                  keyEquivalent: "")
+        catPeek.target = self
+        catPeek.toolTip = "Show a cat in the menu bar when today's spend reaches this limit."
+        menuBarMenu.addItem(.separator())
+        menuBarMenu.addItem(catPeek)
 
         let showInPanelMenu = submenu("Show in Panel")
         toggle(in: showInPanelMenu, "Spend Graph", showGraph, #selector(toggleGraph))
@@ -1438,6 +1480,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func toggleMenuBarInputTokens() { toggleMenuBarField(.inputTokens) }
     @objc func toggleMenuBarOutputTokens() { toggleMenuBarField(.outputTokens) }
     @objc func toggleMenuBarCacheHitRate() { toggleMenuBarField(.cacheHitRate) }
+
+    @objc func setCatPeekLimit() {
+        let alert = NSAlert()
+        alert.messageText = "Cat Peek Limit"
+        alert.informativeText = "Show a cat in the menu bar when today's spend reaches this amount in USD. Leave blank to turn it off."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let input = NSTextField(string: catPeekLimit.map { String(format: "%.2f", $0) } ?? "")
+        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+        input.placeholderString = "e.g. 10.00"
+        alert.accessoryView = input
+        while alert.runModal() == .alertFirstButtonReturn {
+            let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty {
+                catPeekLimit = nil
+                appDefaults.removeObject(forKey: "catPeekLimit")
+            } else if let value = Double(text), value.isFinite, value > 0 {
+                catPeekLimit = value
+                appDefaults.set(value, forKey: "catPeekLimit")
+            } else {
+                alert.informativeText = "Enter a positive dollar amount, or leave blank to turn it off."
+                continue
+            }
+            dailySpend = nil
+            setBarTitle(displayed)
+            refresh()
+            break
+        }
+    }
 
     func setPeriodRangeStyle(_ rangeStyle: PeriodRangeStyle) {
         guard periodRangeStyle != rangeStyle else { return }
@@ -1567,6 +1638,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let now = Date()
         let period = self.period
         let rangeStyle = periodRangeStyle
+        let trackDailySpend = catPeekLimit != nil
         let periodStart = period.start(cal: cal, now: now, rangeStyle: rangeStyle)
         let spec = period.bucketSpec(start: periodStart, cal: cal, now: now,
                                      rangeStyle: rangeStyle)
@@ -1576,11 +1648,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let sources = self.scanAll(since: periodStart, buckets: spec)
             var total = Agg()
             for s in sources { total.add(s.agg) }
+            let todayCost: Double?
+            if period == .day {
+                todayCost = total.cost
+            } else if trackDailySpend {
+                todayCost = self.scanAll(since: cal.startOfDay(for: now), buckets: nil)
+                    .reduce(0) { $0 + $1.agg.cost }
+            } else {
+                todayCost = nil
+            }
             self.performOnMain {
                 // A period or range style can change while its previous scan
                 // is in flight. Never render stale rows under the new selection.
                 if period == self.period, rangeStyle == self.periodRangeStyle {
                     self.latestPanelData = (period, rangeStyle, total, sources)
+                    self.dailySpend = todayCost
+                    if !self.panelIsOpen { self.setBarTitle(self.displayed) }
                     self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                                   output: total.output, hit: total.hitRate))
                     self.rebuildPanel(total: total, sources: sources)
@@ -1607,6 +1690,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // Loading and menu actions enforce this invariant; retain a defensive
         // fallback so the status item remains discoverable if state is changed elsewhere.
         let text = sections.isEmpty ? fmtMoney(v.cost) : sections.joined(separator: "  ")
+        let peek = catPeekLimit.flatMap { limit in dailySpend.map { $0 >= limit } } ?? false
+        if peek, statusItem.button?.image == nil {
+            statusCat.catEnabled = true
+            statusCat.catAnimating = true
+            statusItem.button?.image = statusCat.catImage()
+        } else if !peek, statusItem.button?.image != nil {
+            statusCat.catAnimating = false
+            statusCat.catEnabled = false
+            statusItem.button?.image = nil
+        }
         // Monospaced digits keep the title from wobbling while values roll
         statusItem.button?.attributedTitle = NSAttributedString(
             string: text,
