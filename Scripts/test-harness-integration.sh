@@ -5,9 +5,9 @@ repo_root=$(cd "$(dirname "$0")/.." && pwd)
 harness=${1:-all}
 
 case "$harness" in
-    all|claude-code|codex|opencode|pi) ;;
+    all|claude-code|codex|opencode|opencode-v2|pi) ;;
     *)
-        echo "usage: $0 [all|claude-code|codex|opencode|pi]" >&2
+        echo "usage: $0 [all|claude-code|codex|opencode|opencode-v2|pi]" >&2
         exit 2
         ;;
 esac
@@ -158,14 +158,19 @@ run_codex() {
 }
 
 run_opencode() {
-    echo "=== OpenCode integration ==="
-    resolve_bin "${OPENCODE_BIN:-opencode}"
+    local name=${1:-opencode}
+    echo "=== $name integration ==="
+    if [[ "$name" == opencode-v2 ]]; then
+        resolve_bin "${OPENCODE_V2_BIN:-opencode}"
+    else
+        resolve_bin "${OPENCODE_BIN:-opencode}"
+    fi
     local bin=$RESOLVED_BIN
-    local root="$work/opencode"
+    local root="$work/$name"
     local home="$root/home"
     local workspace="$root/workspace"
     mkdir -p "$home" "$workspace"
-    start_mock opencode Tests/Integration/openai_chat_mock_server.py
+    start_mock "$name" Tests/Integration/openai_chat_mock_server.py
     local port=$MOCK_PORT
     local server_log=$MOCK_LOG
     local config
@@ -173,6 +178,15 @@ run_opencode() {
 {"autoupdate":false,"model":"token-bar-mock/gpt-token-bar-integration","provider":{"token-bar-mock":{"npm":"@ai-sdk/openai-compatible","name":"Token Bar mock","options":{"baseURL":"http://127.0.0.1:$port/v1","apiKey":"dummy"},"models":{"gpt-token-bar-integration":{"name":"Token Bar integration","limit":{"context":128000,"output":4096}}}}}}
 JSON
 )
+    local run_flags=(--pure)
+    if [[ "$name" == opencode-v2 ]]; then
+        config=$(cat <<JSON
+{"update":"disable","model":"token-bar-mock/gpt-token-bar-integration","providers":{"token-bar-mock":{"package":"@opencode/ai/providers/openai-compatible","name":"Token Bar mock","settings":{"baseURL":"http://127.0.0.1:$port/v1","apiKey":"dummy"},"models":{"gpt-token-bar-integration":{"name":"Token Bar integration","limit":{"context":128000,"output":4096}}}}}}
+JSON
+)
+        # Keep V2's service and database separate from any running user service.
+        run_flags=(--standalone)
+    fi
 
     "$bin" --version
     if ! (
@@ -185,7 +199,7 @@ JSON
         OPENCODE_CONFIG_CONTENT="$config" \
         OPENCODE_DISABLE_PROJECT_CONFIG=1 \
         OPENCODE_PURE=true \
-            "$bin" run --pure \
+            "$bin" run "${run_flags[@]}" \
             --model token-bar-mock/gpt-token-bar-integration \
             --format json \
             'Reply with done without using tools.'
@@ -253,10 +267,12 @@ case "$harness" in
         run_claude_code
         run_codex
         run_opencode
+        run_opencode opencode-v2
         run_pi
         ;;
     claude-code) run_claude_code ;;
     codex) run_codex ;;
     opencode) run_opencode ;;
+    opencode-v2) run_opencode opencode-v2 ;;
     pi) run_pi ;;
 esac

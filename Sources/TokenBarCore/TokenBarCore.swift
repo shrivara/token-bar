@@ -810,7 +810,7 @@ private func sqliteString(_ statement: OpaquePointer?, _ column: Int32) -> Strin
 
 /// OpenCode keeps attribution outside message JSON. Read it opportunistically:
 /// older/minimal databases without these tables still produce session totals.
-private func openCodeSessionMetadata(_ db: OpaquePointer) -> [String: OpenCodeSessionMetadata] {
+private func openCodeSessionMetadata(_ db: OpaquePointer, table: String) -> [String: OpenCodeSessionMetadata] {
     let projectColumns = sqliteColumns(db, table: "project")
     let projectPathColumn = ["worktree", "directory", "path"]
         .first(where: projectColumns.contains)
@@ -828,7 +828,7 @@ private func openCodeSessionMetadata(_ db: OpaquePointer) -> [String: OpenCodeSe
         sqlite3_finalize(statement)
     }
 
-    let columns = sqliteColumns(db, table: "session")
+    let columns = sqliteColumns(db, table: table)
     guard columns.contains("id") else { return [:] }
     let directoryColumn = ["directory", "cwd", "path"].first(where: columns.contains)
     let titleColumn = ["title", "name", "slug"].first(where: columns.contains)
@@ -836,7 +836,7 @@ private func openCodeSessionMetadata(_ db: OpaquePointer) -> [String: OpenCodeSe
     func expression(_ column: String?) -> String { column.map { "\"\($0)\"" } ?? "NULL" }
 
     var statement: OpaquePointer?
-    let sql = "SELECT \"id\", \(expression(directoryColumn)), \(expression(titleColumn)), \(expression(projectColumn)) FROM \"session\""
+    let sql = "SELECT \"id\", \(expression(directoryColumn)), \(expression(titleColumn)), \(expression(projectColumn)) FROM \"\(table)\""
     guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { return [:] }
     defer { sqlite3_finalize(statement) }
     var sessions: [String: OpenCodeSessionMetadata] = [:]
@@ -873,18 +873,51 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
     }
     defer { sqlite3_close(db) }
 
-    var minStmt: OpaquePointer?
-    if sqlite3_prepare_v2(db, "SELECT MIN(time_created) FROM message", -1, &minStmt, nil) == SQLITE_OK,
-       sqlite3_step(minStmt) == SQLITE_ROW {
-        let ms = sqlite3_column_int64(minStmt, 0)
-        if ms > 0 { s.dataSince = Date(timeIntervalSince1970: Double(ms) / 1000) }
+    let messageTables = ["message", "session_message"].filter {
+        !sqliteColumns(db!, table: $0).isEmpty
     }
-    sqlite3_finalize(minStmt)
+    // V1 can create an empty session_message table before adopting V2 storage.
+    let hasV2 = messageTables.contains("session_message")
+        && !sqliteColumns(db!, table: "session_v2").isEmpty
+    for table in messageTables {
+        var minStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT MIN(time_created) FROM \"\(table)\"", -1, &minStmt, nil) == SQLITE_OK,
+           sqlite3_step(minStmt) == SQLITE_ROW {
+            let ms = sqlite3_column_int64(minStmt, 0)
+            if ms > 0 {
+                let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+                s.dataSince = s.dataSince.map { min($0, date) } ?? date
+            }
+        }
+        sqlite3_finalize(minStmt)
+    }
 
-    let sessionMetadata = openCodeSessionMetadata(db!)
+    // Both formats can coexist after an upgrade. V2 moved the discriminator
+    // into SQL and model identity into data.model. Migration retains V1 rows,
+    // so prefer the complete V2 session, including transformed compactions.
+    var queries: [String] = []
+    if messageTables.contains("message") {
+        var legacy = "SELECT id, session_id, time_created, data, NULL AS kind, 0 AS version FROM message"
+        if hasV2 {
+            legacy += " WHERE NOT EXISTS (SELECT 1 FROM session_v2 s WHERE s.id = message.session_id)"
+        }
+        queries.append(legacy)
+    }
+    if hasV2 {
+        queries.append("""
+            SELECT m.id, m.session_id, m.time_created, m.data, m.type AS kind, 1 AS version
+            FROM session_message m JOIN session_v2 s ON s.id = m.session_id
+            WHERE s.fork_session_id IS NULL OR m.time_created >= s.time_created
+            """)
+    }
+    guard !queries.isEmpty else { return s }
+
+    var sessionMetadata = openCodeSessionMetadata(db!, table: "session")
+    sessionMetadata.merge(openCodeSessionMetadata(db!, table: "session_v2"),
+                          uniquingKeysWith: { _, newer in newer })
     var projectResolver = ProjectPathResolver()
     var stmt: OpaquePointer?
-    let sql = "SELECT id, session_id, time_created, data FROM message WHERE time_created >= ?"
+    let sql = "SELECT * FROM (\(queries.joined(separator: " UNION ALL "))) WHERE time_created >= ?"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return s }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, Int64(dayStart.timeIntervalSince1970 * 1000))
@@ -895,11 +928,14 @@ public func scanOpenCode(since dayStart: Date, dbPath: URL = openCodeDBPath,
         let rowDate = Date(timeIntervalSince1970: Double(sqlite3_column_int64(stmt, 2)) / 1000)
         guard let c = sqlite3_column_text(stmt, 3),
               let d = jsonObject(String(cString: c)),
-              d["role"] as? String == "assistant",
               let tokens = d["tokens"] as? [String: Any]
         else { continue }
-        let provider = providerID((d["providerID"] as? String) ?? "unknown")
-        let model = (d["modelID"] as? String) ?? "unknown"
+        let isV2 = sqlite3_column_int(stmt, 5) == 1
+        let kind = isV2 ? sqliteString(stmt, 4) : d["role"] as? String
+        guard kind == "assistant" || (isV2 && kind == "compaction") else { continue }
+        let modelInfo = isV2 ? d["model"] as? [String: Any] : d
+        let provider = providerID((modelInfo?["providerID"] as? String) ?? "unknown")
+        let model = (modelInfo?[isV2 ? "id" : "modelID"] as? String) ?? "unknown"
         let key = modelKey(provider: provider, model: model)
         var a = s.perModel[key] ?? Agg()
         let input = num(tokens["input"])
