@@ -45,6 +45,11 @@ jobs:
             @earendil-works/pi-coding-agent@latest \
             @openai/codex@latest \
             opencode-ai@latest
+      - name: Install latest OpenCode 2.x CLI
+        id: install-opencode-v2
+        if: ${{ !cancelled() }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/opencode-v2" --no-audit --no-fund @opencode/cli@latest
       - name: Test Claude Code session contract
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
@@ -55,11 +60,16 @@ jobs:
         env:
           CODEX_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/codex
         run: ./Scripts/test-harness-integration.sh codex
-      - name: Test OpenCode database contract
+      - name: Test OpenCode 1.x database contract
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           OPENCODE_BIN: ${{ runner.temp }}/harnesses/node_modules/.bin/opencode
         run: ./Scripts/test-harness-integration.sh opencode
+      - name: Test OpenCode 2.x database contract
+        if: ${{ !cancelled() && steps.install-opencode-v2.outcome == 'success' }}
+        env:
+          OPENCODE_V2_BIN: ${{ runner.temp }}/opencode-v2/node_modules/.bin/opencode
+        run: ./Scripts/test-harness-integration.sh opencode-v2
       - name: Test pi session contract
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:

@@ -444,6 +444,7 @@ final class SparkBarView: NSView {
     var catAnimating = false {
         didSet { if catAnimating != oldValue { updateCatTimer() } }
     }
+    var onCatFrame: (() -> Void)?
 
     private enum CatAction: Equatable {
         case walk, lick, blink, zoom, pant, sit, stretch
@@ -473,7 +474,7 @@ final class SparkBarView: NSView {
     }
 
     // Match the display refresh cadence for smooth tiny-glyph motion. The timer
-    // exists only while the panel is visible; Reduce Motion keeps a static cat.
+    // runs only while this cat is active; Reduce Motion keeps a static cat.
     private func updateCatTimer() {
         catTimer?.invalidate()
         catTimer = nil
@@ -489,6 +490,7 @@ final class SparkBarView: NSView {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.advanceCat()
             self?.needsDisplay = true
+            self?.onCatFrame?()
         }
         RunLoop.main.add(timer, forMode: .common)
         catTimer = timer
@@ -702,6 +704,33 @@ final class SparkBarView: NSView {
                 + sin(.pi * segmentProgress) * hopHeight
         }
 
+        if action == .zoom, !reduceMotion, catAnimating, window?.isVisible == true {
+            updateLaserOverlay(catX: catX, catY: catY, at: now)
+        } else {
+            hideLaserOverlay()
+        }
+        drawCatShape(at: NSPoint(x: catX, y: catY), action: action, now: now,
+                     actionProgress: actionProgress, reduceMotion: reduceMotion)
+    }
+
+    func catImage() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 15), flipped: false) { [weak self] _ in
+            guard let self else { return false }
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let now = ProcessInfo.processInfo.systemUptime
+            let duration = max(self.catActionEndsAt - self.catActionStartedAt, 0.001)
+            self.drawCatShape(at: NSPoint(x: 9, y: 3),
+                              action: reduceMotion ? .walk : self.catAction, now: now,
+                              actionProgress: min(max((now - self.catActionStartedAt) / duration, 0), 1),
+                              reduceMotion: reduceMotion)
+            return true
+        }
+        image.accessibilityDescription = "Animated cat"
+        return image
+    }
+
+    private func drawCatShape(at origin: NSPoint, action: CatAction, now: TimeInterval,
+                              actionProgress: Double, reduceMotion: Bool) {
         let moving = action == .walk || action == .zoom
         let gait = Int(now * (action == .zoom ? 9 : 4)).isMultiple(of: 2)
         let actionWave = CGFloat(sin(.pi * actionProgress))
@@ -720,15 +749,9 @@ final class SparkBarView: NSView {
         let catAlpha: CGFloat = theme == .system ? 0.78 : 0.82
         let catColor = theme.palette.primary.withAlphaComponent(catAlpha)
 
-        if action == .zoom, !reduceMotion, catAnimating, window?.isVisible == true {
-            updateLaserOverlay(catX: catX, catY: catY, at: now)
-        } else {
-            hideLaserOverlay()
-        }
-
         NSGraphicsContext.saveGraphicsState()
         let transform = NSAffineTransform()
-        transform.translateX(by: catX, yBy: catY)
+        transform.translateX(by: origin.x, yBy: origin.y)
         if catDirection < 0, !reduceMotion { transform.scaleX(by: -1, yBy: 1) }
         transform.concat()
         catColor.setFill()
@@ -1054,6 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var latestPanelData: (period: Period, rangeStyle: PeriodRangeStyle,
                           total: Agg, sources: [SourceStats])?
     var sparkView: SparkBarView?
+    let statusCat = SparkBarView()
     fileprivate var savedCatMotionState: CatMotionState?
     let panelPopover = NSPopover()
     var panelContentView: ThemedPopoverContentView?
@@ -1076,11 +1100,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
     var menuBarFields = MenuBarFields.load(from: appDefaults)
     var panelTheme = PanelTheme.load(from: appDefaults)
+    var catPeekLimit: Double? = {
+        guard let value = (appDefaults.object(forKey: "catPeekLimit") as? NSNumber)?.doubleValue,
+              value.isFinite, value > 0 else { return nil }
+        return value
+    }()
+    var dailySpend: Double?
     // Experimental features are opt-in; unset preferences must stay disabled.
     var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
     var showExperimentalAttribution = appDefaults.object(forKey: "showExperimentalAttribution") as? Bool ?? false
 
+    var remoteMachines: [RemoteMachine] = {
+        guard let data = appDefaults.data(forKey: "remoteMachines"),
+              let machines = try? JSONDecoder().decode([RemoteMachine].self, from: data) else { return [] }
+        return machines.filter { (try? RemoteMachine(host: $0.host)) != nil }
+    }()
+    var selectedMachineID = appDefaults.string(forKey: "selectedMachineID")
+    var selectedMachine: RemoteMachine? {
+        remoteMachines.first { $0.id.uuidString == selectedMachineID }
+    }
+    var machineGeneration = 0
+    var remoteError: String?
+    var remoteUpdated: Date?
+    // Accessed only on remoteScanQueue.
+    var remoteCaches: [UUID: RemoteUsageCache] = [:]
+    var remoteAttempts: [UUID: Date] = [:]
+    var remoteErrors: [UUID: String] = [:]
+    var forceRemotePending = false
+
+    var machineStatus: String {
+        guard selectedMachine != nil else { return "Local history" }
+        let updated = remoteUpdated.map { DateFormatter.localizedString(from: $0, dateStyle: .none, timeStyle: .short) }
+        if remoteError != nil { return updated.map { "Offline · cached \($0)" } ?? "Unable to connect" }
+        return updated.map { "Updated \($0)" } ?? "Connecting…"
+    }
+
+    var emptyUsageTitle: String {
+        if selectedMachine != nil, remoteError != nil { return "Unable to refresh remote usage" }
+        return latestPanelData == nil ? "Loading usage…" : "No usage yet for this period"
+    }
+
+    var emptyUsageDetail: String {
+        if selectedMachine != nil {
+            if remoteError != nil { return "Check SSH access and Python 3 on the host.\nUse the Machine menu to retry." }
+            return "Reading remote Claude Code, Codex,\nOpenCode, and pi history over SSH."
+        }
+        return latestPanelData == nil ? "Scanning local Claude Code, Codex,\nOpenCode, and pi history."
+            : "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi."
+    }
+
     let scanQueue = DispatchQueue(label: "com.shrivara.tokenbar.scan", qos: .userInitiated)
+    let remoteScanQueue = DispatchQueue(label: "com.shrivara.tokenbar.remote", qos: .userInitiated)
     var scanning = false
     var scanPending = false
     // Coverage is per-source: Claude Code prunes logs after ~30 days while
@@ -1127,6 +1197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusItemClicked)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem.button?.imagePosition = .imageLeading
+        statusCat.onCatFrame = { [weak self] in
+            guard let self, let button = self.statusItem.button, button.image != nil else { return }
+            button.image = self.statusCat.catImage()
+        }
         refresh()
         startWatching()
         prewarmCaches()
@@ -1140,6 +1215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // window (year) to populate the parse caches so the first switch to any
     // period is instant instead of paying the full disk read + parse.
     func prewarmCaches() {
+        guard selectedMachine == nil else { return }
         scanQueue.async { [weak self] in
             guard let self = self else { return }
             let cal = Calendar.current, now = Date()
@@ -1182,6 +1258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // Debounce bursts of file events into a single rescan (runs on main)
     func scheduleRefresh() {
+        guard selectedMachine == nil else { return }
         pendingRefreshTimer?.invalidate()
         pendingRefreshTimer = commonModesTimer(interval: 0.5, repeats: false) { [weak self] in
             self?.refresh()
@@ -1317,6 +1394,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return item
         }
 
+        let machineItem = NSMenuItem(title: "Machine", action: nil, keyEquivalent: "")
+        machineItem.submenu = makeMachineMenu()
+        menu.addItem(machineItem)
+        menu.addItem(.separator())
+
         let menuBarMenu = submenu("Show in Menu Bar")
         let canRemoveSelectedField = menuBarFields.rawValue.nonzeroBitCount > 1
         func menuBarToggle(_ title: String, _ field: MenuBarFields, _ selector: Selector) {
@@ -1333,6 +1415,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menuBarToggle("Input Tokens", .inputTokens, #selector(toggleMenuBarInputTokens))
         menuBarToggle("Output Tokens", .outputTokens, #selector(toggleMenuBarOutputTokens))
         menuBarToggle("Cache Hit Rate", .cacheHitRate, #selector(toggleMenuBarCacheHitRate))
+        let catPeek = NSMenuItem(title: catPeekLimit.map { "Cat Peek Limit… (\(fmtMoney($0))/day)" }
+                                  ?? "Cat Peek Limit…", action: #selector(setCatPeekLimit),
+                                  keyEquivalent: "")
+        catPeek.target = self
+        catPeek.toolTip = "Show a cat in the menu bar when today's spend reaches this limit."
+        menuBarMenu.addItem(.separator())
+        menuBarMenu.addItem(catPeek)
 
         let showInPanelMenu = submenu("Show in Panel")
         toggle(in: showInPanelMenu, "Spend Graph", showGraph, #selector(toggleGraph))
@@ -1348,6 +1437,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                                  showExperimentalAttribution,
                                  #selector(toggleExperimentalAttribution))
         attribution.toolTip = "Shows cross-agent project totals and top sessions."
+        attribution.isEnabled = selectedMachine == nil
+        if selectedMachine != nil { attribution.toolTip = "Projects & Sessions is available for Main Machine only." }
 
         let themeMenu = submenu("Theme")
         for theme in PanelTheme.allCases {
@@ -1386,6 +1477,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         quit.target = self
         menu.addItem(quit)
         return menu
+    }
+
+    func makeMachineMenu() -> NSMenu {
+        let menu = NSMenu(title: "Machine")
+        menu.autoenablesItems = false
+        @discardableResult
+        func item(_ title: String, _ action: Selector, value: String? = nil) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = value
+            menu.addItem(item)
+            return item
+        }
+        item("Main Machine", #selector(selectMachine(_:))).state = selectedMachine == nil ? .on : .off
+        for machine in remoteMachines {
+            item(machine.host, #selector(selectMachine(_:)), value: machine.id.uuidString).state =
+                machine.id == selectedMachine?.id ? .on : .off
+        }
+        menu.addItem(.separator())
+        item("Add SSH Machine…", #selector(addRemoteMachine))
+        if selectedMachine != nil {
+            item("Refresh Now", #selector(refreshRemoteMachine))
+            item("Connection Details…", #selector(showRemoteStatus))
+            item("Remove Selected Machine…", #selector(removeRemoteMachine))
+        }
+        return menu
+    }
+
+    @objc func showMachineMenu(_ sender: NSButton) {
+        makeMachineMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    @objc func selectMachine(_ sender: NSMenuItem) {
+        let id = sender.representedObject as? String
+        guard id != selectedMachine?.id.uuidString else { return }
+        selectMachineID(id)
+    }
+
+    func selectMachineID(_ id: String?) {
+        selectedMachineID = id
+        appDefaults.set(id, forKey: "selectedMachineID")
+        machineGeneration += 1
+        scanning = false
+        scanPending = false
+        forceRemotePending = false
+        latestPanelData = nil
+        remoteError = nil
+        remoteUpdated = nil
+        dailySpend = nil
+        animTimer?.invalidate()
+        pendingBar = nil
+        displayed = BarValues()
+        setBarTitle(displayed)
+        panelSignature = ""
+        rebuildPanel(total: Agg(), sources: [])
+        refresh()
+    }
+
+    @objc func addRemoteMachine() {
+        let alert = NSAlert()
+        alert.messageText = "Add SSH Machine"
+        alert.informativeText = "Enter an SSH config alias or user@hostname. First connect in Terminal to trust the host and set up key access. The host needs Python 3. Changed history files, which can include session text, are cached privately on this Mac."
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        input.placeholderString = "e.g. work-server or user@hostname"
+        alert.accessoryView = input
+        while alert.runModal() == .alertFirstButtonReturn {
+            do {
+                let host = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let machine = try RemoteMachine(host: host)
+                if let existing = remoteMachines.first(where: { $0.host == host }) {
+                    selectMachineID(existing.id.uuidString)
+                } else {
+                    remoteMachines.append(machine)
+                    appDefaults.set(try JSONEncoder().encode(remoteMachines), forKey: "remoteMachines")
+                    selectMachineID(machine.id.uuidString)
+                }
+                return
+            } catch { alert.informativeText = error.localizedDescription }
+        }
+    }
+
+    @objc func refreshRemoteMachine() { refresh(forceRemote: true) }
+
+    @objc func showRemoteStatus() {
+        guard let machine = selectedMachine else { return }
+        let alert = NSAlert()
+        alert.messageText = machine.host
+        alert.informativeText = machineStatus + "\n\n" + (remoteError
+            ?? "Usage refreshes every 60 seconds over SSH. Periods use this Mac's time zone. Projects & Sessions is available for Main Machine only.")
+        alert.runModal()
+    }
+
+    @objc func removeRemoteMachine() {
+        guard let machine = selectedMachine else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \(machine.host)?"
+        alert.informativeText = "Remove the attachment and its cached history from this Mac. Nothing on the remote machine will be deleted."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        remoteMachines.removeAll { $0.id == machine.id }
+        if let data = try? JSONEncoder().encode(remoteMachines) {
+            appDefaults.set(data, forKey: "remoteMachines")
+        }
+        selectMachineID(nil)
+        remoteScanQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let cache = try self.remoteCaches[machine.id] ?? RemoteUsageCache(machine: machine)
+                try cache.remove()
+            } catch {
+                self.performOnMain {
+                    let alert = NSAlert()
+                    alert.messageText = "Could not remove cached history"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+            self.remoteCaches.removeValue(forKey: machine.id)
+            self.remoteAttempts.removeValue(forKey: machine.id)
+            self.remoteErrors.removeValue(forKey: machine.id)
+        }
     }
 
     // View toggles only change presentation, so rebuild synchronously from the
@@ -1438,6 +1653,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func toggleMenuBarInputTokens() { toggleMenuBarField(.inputTokens) }
     @objc func toggleMenuBarOutputTokens() { toggleMenuBarField(.outputTokens) }
     @objc func toggleMenuBarCacheHitRate() { toggleMenuBarField(.cacheHitRate) }
+
+    @objc func setCatPeekLimit() {
+        let alert = NSAlert()
+        alert.messageText = "Cat Peek Limit"
+        alert.informativeText = "Show a cat in the menu bar when today's spend reaches this amount in USD. Leave blank to turn it off."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let input = NSTextField(string: catPeekLimit.map { String(format: "%.2f", $0) } ?? "")
+        input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+        input.placeholderString = "e.g. 10.00"
+        alert.accessoryView = input
+        while alert.runModal() == .alertFirstButtonReturn {
+            let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty {
+                catPeekLimit = nil
+                appDefaults.removeObject(forKey: "catPeekLimit")
+            } else if let value = Double(text), value.isFinite, value > 0 {
+                catPeekLimit = value
+                appDefaults.set(value, forKey: "catPeekLimit")
+            } else {
+                alert.informativeText = "Enter a positive dollar amount, or leave blank to turn it off."
+                continue
+            }
+            dailySpend = nil
+            setBarTitle(displayed)
+            refresh()
+            break
+        }
+    }
 
     func setPeriodRangeStyle(_ rangeStyle: PeriodRangeStyle) {
         guard periodRangeStyle != rangeStyle else { return }
@@ -1559,28 +1803,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // Scans run on a background queue (a year-view scan reads every log file;
     // doing that on the main thread on every file event made the UI lag).
     // In-flight scans coalesce: at most one queued behind the current one.
-    func refresh() {
-        if scanning { scanPending = true; return }
+    func refresh(forceRemote: Bool = false) {
+        if scanning {
+            scanPending = true
+            forceRemotePending = forceRemotePending || forceRemote
+            return
+        }
         scanning = true
 
         let cal = Calendar.current
         let now = Date()
         let period = self.period
         let rangeStyle = periodRangeStyle
+        let machine = selectedMachine
+        let generation = machineGeneration
+        let trackDailySpend = catPeekLimit != nil
         let periodStart = period.start(cal: cal, now: now, rangeStyle: rangeStyle)
-        let spec = period.bucketSpec(start: periodStart, cal: cal, now: now,
-                                     rangeStyle: rangeStyle)
+        let periodSpec = period.bucketSpec(start: periodStart, cal: cal, now: now,
+                                           rangeStyle: rangeStyle)
+        // Year bars are monthly. Temporarily put today's entries in a separate
+        // bucket so the same scan can provide an exact daily total.
+        let spec = trackDailySpend && period == .year
+            ? BucketSpec(count: periodSpec.count + 1) { date in
+                cal.isDate(date, inSameDayAs: now) ? periodSpec.count : periodSpec.index(date)
+            }
+            : periodSpec
 
-        scanQueue.async { [weak self] in
+        (machine == nil ? scanQueue : remoteScanQueue).async { [weak self] in
             guard let self = self else { return }
-            let sources = self.scanAll(since: periodStart, buckets: spec)
+            var sources: [SourceStats] = []
+            var connectionError: String?
+            var updated: Date?
+            if let machine {
+                do {
+                    let cache = try self.remoteCaches[machine.id] ?? RemoteUsageCache(machine: machine)
+                    self.remoteCaches[machine.id] = cache
+                    if forceRemote || self.remoteAttempts[machine.id].map({ Date().timeIntervalSince($0) >= 60 }) ?? true {
+                        self.remoteAttempts[machine.id] = Date()
+                        do {
+                            try cache.sync(from: machine)
+                            self.remoteErrors.removeValue(forKey: machine.id)
+                        } catch { self.remoteErrors[machine.id] = error.localizedDescription }
+                    }
+                    connectionError = self.remoteErrors[machine.id]
+                    updated = cache.lastUpdated
+                    if updated != nil { sources = cache.scan(since: periodStart, buckets: spec) }
+                } catch { connectionError = error.localizedDescription }
+            } else {
+                sources = self.scanAll(since: periodStart, buckets: spec)
+            }
             var total = Agg()
             for s in sources { total.add(s.agg) }
+            let todayCost: Double?
+            if period == .day {
+                todayCost = total.cost
+            } else if trackDailySpend, let todayIndex = spec.index(now) {
+                todayCost = sources.reduce(0) { $0 + $1.buckets[todayIndex] }
+                if period == .year, let monthIndex = periodSpec.index(now) {
+                    for index in sources.indices {
+                        sources[index].buckets[monthIndex] += sources[index].buckets[todayIndex]
+                        sources[index].buckets.removeLast()
+                    }
+                }
+            } else {
+                todayCost = nil
+            }
             self.performOnMain {
+                guard generation == self.machineGeneration else { return }
                 // A period or range style can change while its previous scan
                 // is in flight. Never render stale rows under the new selection.
                 if period == self.period, rangeStyle == self.periodRangeStyle {
+                    self.remoteError = connectionError
+                    self.remoteUpdated = updated
                     self.latestPanelData = (period, rangeStyle, total, sources)
+                    self.dailySpend = todayCost
+                    if !self.panelIsOpen { self.setBarTitle(self.displayed) }
                     self.animateBar(to: BarValues(cost: total.cost, input: total.input,
                                                   output: total.output, hit: total.hitRate))
                     self.rebuildPanel(total: total, sources: sources)
@@ -1588,7 +1885,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self.scanning = false
                 if self.scanPending {
                     self.scanPending = false
-                    self.refresh()
+                    let force = self.forceRemotePending
+                    self.forceRemotePending = false
+                    self.refresh(forceRemote: force)
                 }
             }
         }
@@ -1606,7 +1905,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         // Loading and menu actions enforce this invariant; retain a defensive
         // fallback so the status item remains discoverable if state is changed elsewhere.
-        let text = sections.isEmpty ? fmtMoney(v.cost) : sections.joined(separator: "  ")
+        var text = sections.isEmpty ? fmtMoney(v.cost) : sections.joined(separator: "  ")
+        if let machine = selectedMachine {
+            let host = machine.host.count > 20 ? String(machine.host.prefix(19)) + "…" : machine.host
+            let metrics = remoteUpdated == nil ? (remoteError == nil ? "Loading…" : "Offline") : text
+            text = "\(host) · \(metrics)" + (remoteError != nil && remoteUpdated != nil ? " · stale" : "")
+        }
+        statusItem.button?.toolTip = "\(selectedMachine?.host ?? "Main Machine") · \(machineStatus)"
+        let peek = catPeekLimit.flatMap { limit in dailySpend.map { $0 >= limit } } ?? false
+        if peek, statusItem.button?.image == nil {
+            statusCat.catEnabled = true
+            statusCat.catAnimating = true
+            statusItem.button?.image = statusCat.catImage()
+        } else if !peek, statusItem.button?.image != nil {
+            statusCat.catAnimating = false
+            statusCat.catEnabled = false
+            statusItem.button?.image = nil
+        }
         // Monospaced digits keep the title from wobbling while values roll
         statusItem.button?.attributedTitle = NSAttributedString(
             string: text,
@@ -1755,7 +2070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func openAttributedProject(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue,
+        guard selectedMachine == nil, let path = sender.identifier?.rawValue,
               FileManager.default.fileExists(atPath: path) else { NSSound.beep(); return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
     }
@@ -1780,7 +2095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     @objc func resumeAttributedSession(_ sender: NSButton) {
-        guard let key = sender.identifier?.rawValue,
+        guard selectedMachine == nil, let key = sender.identifier?.rawValue,
               let target = sessionLaunchTargets[key],
               let invocation = sessionInvocation(target)
         else { NSSound.beep(); return }
@@ -1850,7 +2165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             .sorted()
             .joined(separator: "|")
         let attributionSignature: String
-        if showExperimentalAttribution {
+        if showExperimentalAttribution && selectedMachine == nil {
             let attribution = attributionData(active)
             let metadata = active.flatMap { source in
                 source.sessions.values.map {
@@ -1866,6 +2181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             attributionSignature = ""
         }
         let signature = [panelTheme.rawValue,
+                          "machine:\(selectedMachine?.id.uuidString ?? "main")",
+                          "offline:\(remoteError != nil)",
                          "graph:\(showGraph)",
                          "icons:\(showProviderIcons)",
                          "names:\(showFullModelNames)",
@@ -1920,19 +2237,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if panelSize != panel.frame.size { panel.setFrameSize(panelSize) }
 
         // Full-size content paints the native chevron, while the safe area keeps
-        // controls out of the chevron and rounded corners. Include those insets
-        // in the outer size so they do not clip or silently shorten the panel.
+        // controls out of the chevron and rounded corners. AppKit may already
+        // add that chrome outside contentSize; do not reserve it twice.
         let safeInsets = panelContentView?.safeAreaInsets ?? NSEdgeInsets()
-        let horizontalChrome = safeInsets.left + safeInsets.right
-        let verticalChrome = safeInsets.top + safeInsets.bottom
+        let frameSize = panelContentView?.frame.size ?? panelPopover.contentSize
+        let nativeWidth = max(0, frameSize.width - panelPopover.contentSize.width)
+        let nativeHeight = max(0, frameSize.height - panelPopover.contentSize.height)
+        let horizontalChrome = max(0, safeInsets.left + safeInsets.right - nativeWidth)
+        let verticalChrome = max(0, safeInsets.top + safeInsets.bottom - nativeHeight)
         let visiblePanelHeight = min(panelSize.height,
-                                     max(1, maximumPanelHeight() - verticalChrome))
+                                     max(1, maximumPanelHeight() - verticalChrome - nativeHeight))
         panelScrollView?.hasVerticalScroller = panelSize.height > visiblePanelHeight + 0.5
         let popoverSize = NSSize(width: panelSize.width + horizontalChrome,
                                  height: visiblePanelHeight + verticalChrome)
-        if panelPopover.contentViewController?.preferredContentSize != popoverSize {
-            panelPopover.contentViewController?.preferredContentSize = popoverSize
-        }
+        // Let the popover size its full-size content view. Setting the
+        // controller's preferred size as well can shrink it inside the chrome.
         if panelPopover.contentSize != popoverSize {
             panelPopover.contentSize = popoverSize
         }
@@ -1958,6 +2277,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func updateFields(total: Agg, active: [SourceStats]) {
+        setField("MachineStatus", machineStatus)
+        statFields["MachineStatus"]?.toolTip = remoteError ?? machineStatus
+        setField("EmptyTitle", emptyUsageTitle)
+        setField("EmptyDetail", emptyUsageDetail)
         setField("Spend", fmtMoney(total.cost))
         setField("Tokens", tokensLine(total))
         updatePeriodControls()
@@ -1975,7 +2298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 setField("\(s.name)/\(model)/Hit", String(format: "%.0f%%", a.hitRate * 100))
             }
         }
-        if showExperimentalAttribution {
+        if showExperimentalAttribution && selectedMachine == nil {
             let attribution = attributionData(active)
             for project in attribution.projects {
                 let prefix = "Attribution/Project/\(project.key)"
@@ -2087,6 +2410,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return row
         }
 
+        let machineButton = NSButton(title: "\(selectedMachine?.host ?? "Main Machine") ▾",
+                                     target: self, action: #selector(showMachineMenu(_:)))
+        machineButton.isBordered = false
+        machineButton.font = .systemFont(ofSize: 11, weight: .medium)
+        machineButton.contentTintColor = colors.secondary
+        machineButton.toolTip = "Select Main Machine or attach a remote SSH machine."
+        machineButton.setAccessibilityLabel("Select machine: \(selectedMachine?.host ?? "Main Machine")")
+        let connection = label("MachineStatus", machineStatus, size: 10, color: colors.muted)
+        connection.toolTip = remoteError ?? machineStatus
+        let machineRow = NSStackView(views: [machineButton, connection])
+        machineRow.orientation = .horizontal
+        machineRow.spacing = 8
+        panel.addArrangedSubview(machineRow)
+        panel.setCustomSpacing(4, after: machineRow)
+
         // Header: big spend + period word, with the D W M Y switcher on the right
         let spend = label("Spend", fmtMoney(total.cost), size: 24, weight: .semibold, mono: true)
         let periodLabel = label(nil, period.title(rangeStyle: periodRangeStyle), size: 12,
@@ -2149,17 +2487,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         sparkView = nil
         if active.isEmpty {
-            let isLoading = latestPanelData == nil
             panel.setCustomSpacing(16, after: panel.arrangedSubviews.last!)
-            panel.addArrangedSubview(label(nil,
-                                          isLoading ? "Loading usage…" : "No usage yet for this period",
+            panel.addArrangedSubview(label("EmptyTitle", emptyUsageTitle,
                                           size: 13, weight: .medium))
             panel.setCustomSpacing(3, after: panel.arrangedSubviews.last!)
             let emptyMessage = label(
-                nil,
-                isLoading
-                    ? "Scanning local Claude Code, Codex,\nOpenCode, and pi history."
-                    : "Token Bar will populate as you use\nClaude Code, Codex, OpenCode, or Pi.",
+                "EmptyDetail", emptyUsageDetail,
                 size: 12, color: colors.secondary)
             emptyMessage.maximumNumberOfLines = 2
             emptyMessage.lineBreakMode = .byWordWrapping
@@ -2264,7 +2597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             grid.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -14).isActive = true
         }
 
-        if showExperimentalAttribution {
+        if showExperimentalAttribution && selectedMachine == nil {
             let attribution = attributionData(active)
             let projectLimit = 4
             let sessionLimit = 4
