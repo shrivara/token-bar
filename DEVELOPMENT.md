@@ -54,8 +54,8 @@ swift test
 ```
 
 The suite covers usage scanning, pricing, reporting periods, OpenCode 1.x and
-2.x databases, and remote-history caching. Tests that require installed agent
-CLIs are skipped unless enabled by the integration script below.
+2.x databases, remote-history caching, and preference migration. Tests that require
+installed agent CLIs are skipped unless enabled by the integration script below.
 
 CI runs tests, builds the app, and verifies the bundle on macOS 15 and 26.
 Markdown-only changes, changes under `docs/`, and license-only changes are

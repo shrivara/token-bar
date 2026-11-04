@@ -16,14 +16,7 @@ let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? 
 let appDefaults: UserDefaults = {
     let canonical = UserDefaults(suiteName: "com.shrivara.tokenbar") ?? .standard
     let legacy = UserDefaults(suiteName: "token-bar")
-    for key in ["period", "periodRangeStyle", "showGraph", "showProviderIcons",
-                "showFullModelNames", "menuBarFields", "theme",
-                "showExperimentalAttribution"]
-        where canonical.object(forKey: key) == nil {
-        if let value = legacy?.object(forKey: key) {
-            canonical.set(value, forKey: key)
-        }
-    }
+    AppPreferences.migrateLegacyValues(from: legacy, to: canonical)
     return canonical
 }()
 
@@ -1092,10 +1085,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // Left-click shows the dashboard popover; right-click shows the View menu.
 
-    // View preferences (right-click menu). object(forKey:) distinguishes an
-    // unset default (nil) from an explicit false, so first launch keeps the
-    // graph and icons on.
+    // View preferences (right-click menu). Distinguish unset preferences from
+    // explicit false values so new defaults never override a saved opt-out.
     var showGraph = appDefaults.object(forKey: "showGraph") as? Bool ?? true
+    var showAnimatedCat = AppPreferences.animatedCatEnabled(in: appDefaults)
     var showProviderIcons = appDefaults.object(forKey: "showProviderIcons") as? Bool ?? true
     var showFullModelNames = appDefaults.bool(forKey: "showFullModelNames")
     var menuBarFields = MenuBarFields.load(from: appDefaults)
@@ -1106,8 +1099,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return value
     }()
     var dailySpend: Double?
-    // Experimental features are opt-in; unset preferences must stay disabled.
-    var showExperimentalCat = appDefaults.object(forKey: "showExperimentalCat") as? Bool ?? false
+    // Projects & Sessions remains experimental and opt-in.
     var showExperimentalAttribution = appDefaults.object(forKey: "showExperimentalAttribution") as? Bool ?? false
 
     var remoteMachines: [RemoteMachine] = {
@@ -1292,7 +1284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func popoverWillShow(_ notification: Notification) {
         panelIsOpen = true
         statusItem.button?.highlight(true)
-        sparkView?.catAnimating = showExperimentalCat
+        sparkView?.catAnimating = showAnimatedCat
         startOutsideClickMonitoring()
         // Full-size content reports its chevron/rounded-corner safe area once
         // AppKit creates the popover window. Account for it before presentation.
@@ -1429,10 +1421,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                #selector(toggleProviderIcons))
         toggle(in: showInPanelMenu, "Full Model Names", showFullModelNames,
                #selector(toggleFullModelNames))
-        showInPanelMenu.addItem(.sectionHeader(title: "Experimental"))
         let cat = toggle(in: showInPanelMenu, "Animated Cat",
-                         showExperimentalCat, #selector(toggleExperimentalCat))
+                         showAnimatedCat, #selector(toggleAnimatedCat))
         cat.toolTip = "Appears on the spend graph."
+        showInPanelMenu.addItem(.sectionHeader(title: "Experimental"))
         let attribution = toggle(in: showInPanelMenu, "Projects & Sessions",
                                  showExperimentalAttribution,
                                  #selector(toggleExperimentalAttribution))
@@ -1694,9 +1686,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc func useRelativeRange() { setPeriodRangeStyle(.relative) }
 
     @objc func toggleGraph() { showGraph.toggle(); applyViewChange("showGraph", showGraph) }
-    @objc func toggleExperimentalCat() {
-        showExperimentalCat.toggle()
-        applyViewChange("showExperimentalCat", showExperimentalCat)
+    @objc func toggleAnimatedCat() {
+        showAnimatedCat.toggle()
+        applyViewChange(AppPreferences.animatedCatKey, showAnimatedCat)
     }
     @objc func toggleExperimentalAttribution() {
         showExperimentalAttribution.toggle()
@@ -2186,7 +2178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                          "graph:\(showGraph)",
                          "icons:\(showProviderIcons)",
                          "names:\(showFullModelNames)",
-                         "cat:\(showExperimentalCat)",
+                         "cat:\(showAnimatedCat)",
                          "attribution:\(showExperimentalAttribution)",
                          sourceSignature,
                          attributionSignature]
@@ -2512,9 +2504,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             spark.caption = period.caption
             spark.theme = panelTheme
             spark.axis = period.axis(cal: cal, now: Date(), rangeStyle: periodRangeStyle)
-            spark.catEnabled = showExperimentalCat
+            spark.catEnabled = showAnimatedCat
             if let savedCatMotionState { spark.restoreMotionState(savedCatMotionState) }
-            spark.catAnimating = showExperimentalCat && panelIsOpen
+            spark.catAnimating = showAnimatedCat && panelIsOpen
             sparkView = spark
             panel.setCustomSpacing(10, after: panel.arrangedSubviews.last!)
             panel.addArrangedSubview(spark)

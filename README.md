@@ -50,12 +50,13 @@ released versions, not unreleased changes on `main`.
 
 ### Animated cat
 
-Set **Show in Menu Bar → Cat Peek Limit…** to show an animated cat when the
-selected machine's estimated spend for today reaches your chosen USD amount.
-Leave the field blank to turn it off.
+The animated cat on the spend graph is enabled by default. Toggle it under
+**Show in Panel → Animated Cat**. Saved disabled settings are preserved across
+upgrades.
 
-The cat on the spend graph is controlled separately by
-**Show in Panel → Animated Cat**, under **Experimental**.
+The menu-bar cat is controlled separately. Set **Show in Menu Bar → Cat Peek Limit…**
+to show it when the selected machine's estimated spend for today reaches your
+chosen USD amount. Leave the field blank to turn it off.
 
 ### Projects and sessions
 
