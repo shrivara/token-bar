@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-26]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -33,7 +33,7 @@ jobs:
       - name: Run tests
         run: swift test
       - name: Verify generated app icon
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           icon_dir=$(mktemp -d)
           ./Scripts/generate-app-icon.swift "$icon_dir/AppIcon.icns"

@@ -38,8 +38,10 @@ The steps below are for feature releases or workflow recovery.
    ```sh
    gh workflow run bottle.yml --repo shrivara/homebrew-tap
    ```
-   The workflow builds on macOS 14/15/26 (arm64), uploads bottles to a
-   `bottles-token-bar-X.Y.Z` release on the tap, and commits the `bottle do`
-   block into the formula. Verify the run went green before announcing.
+   The workflow builds on supported macOS 15/26 (arm64) runner images,
+   uploads bottles to a `bottles-token-bar-X.Y.Z` release on the tap, and
+   commits the `bottle do` block into the formula. Verify the run went green
+   before announcing. GitHub has retired its macOS 14 runners; macOS 14
+   remains supported through source builds with the Xcode Command Line Tools.
 
 Users then get the new version via `brew update && brew upgrade token-bar`.

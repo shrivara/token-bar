@@ -34,6 +34,9 @@ brew install shrivara/tap/token-bar
 brew services start token-bar   # start now + at login
 ```
 
+New prebuilt bottles target Apple Silicon on macOS 15 and 26. macOS 14 remains
+supported through source builds with the Xcode Command Line Tools.
+
 ### Update
 
 ```sh
