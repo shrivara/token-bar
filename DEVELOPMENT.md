@@ -35,7 +35,7 @@ fetch new prices.
 
 Add `TokenBar.app` in **System Settings → General → Login Items** to start a
 source-built app at login. After quitting the development build, use
-`brew services start token-bar` to start the installed version again.
+`brew services restart token-bar` to start the installed version again.
 
 ### App icon
 
