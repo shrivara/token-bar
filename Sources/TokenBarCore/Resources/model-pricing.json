@@ -22461,9 +22461,9 @@
           "output": 0.495
         },
         "moonshotai/Kimi-K2.6": {
-          "cache_read": 0.4296,
+          "cache_read": 0.156,
           "cache_write": 0,
-          "input": 1.1685,
+          "input": 0.78,
           "output": 3.75
         },
         "moonshotai/Kimi-K2.7-Code": {
