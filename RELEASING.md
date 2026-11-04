@@ -1,47 +1,190 @@
-# Releasing token-bar
+# Releasing Token Bar
 
-The `Daily pricing release` workflow checks models.dev every day. A changed catalog is tested and built, then committed to `main` with an automatic patch-version bump, `vX.Y.Z` tag, and matching GitHub Release. An unchanged catalog does nothing. The workflow immediately starts the tap's `Sync token-bar` workflow, which updates the formula and builds bottles. The tap also checks daily as a fallback.
+Merging application changes into `main` runs CI, but does not publish a release.
+Homebrew installs versioned tags, not the latest commit on `main`. Cut a release
+to make merged features and fixes available to users.
 
-Tags pushed manually are handled by the `GitHub release` workflow, which publishes a matching GitHub Release with generated notes. Automated pricing releases publish directly because GitHub does not start tag-push workflows for tags created with `GITHUB_TOKEN`.
+## Release workflows
 
-## One-time tap trigger setup
+- **GitHub release** runs when a `vX.Y.Z` tag is pushed. It publishes a matching
+  GitHub release with generated notes, but does not immediately update Homebrew.
+- **Daily pricing release** runs on a schedule or manual dispatch. If the
+  normalized pricing catalog changed, it bumps the patch version, tests and
+  builds the app, commits and tags the update, publishes a GitHub release, and
+  attempts to trigger Homebrew synchronization. If prices are unchanged, the
+  release job is skipped, even if `main` contains unreleased code changes.
+- **Sync token-bar**, in `shrivara/homebrew-tap`, runs on a daily schedule or
+  manual dispatch. It updates the formula to the latest version tag and starts
+  **Bottle** when a formula update or bottle build is needed.
 
-Create a fine-grained personal access token scoped only to `shrivara/homebrew-tap`, with **Actions: read and write**, then add it to this repository as the `TAP_WORKFLOW_TOKEN` Actions secret:
+Automated pricing releases publish directly because tag pushes made with
+`GITHUB_TOKEN` do not trigger the **GitHub release** workflow.
+
+## Configure automatic Homebrew synchronization
+
+Create a fine-grained personal access token with access only to
+`shrivara/homebrew-tap` and **Actions: read and write** permission. Store it as an
+Actions secret in `shrivara/token-bar`:
 
 ```sh
 gh secret set TAP_WORKFLOW_TOKEN --repo shrivara/token-bar
 ```
 
-The steps below are for feature releases or workflow recovery.
+Enter the token at the hidden prompt, not as a command-line argument. Choose an
+expiration date and set a renewal reminder. Keep your normal `gh` login separate
+from this restricted automation token.
 
-1. **Test and tag manually**:
-    ```sh
-    ./Scripts/update-model-pricing.sh  # review the updated snapshot
-    ./Scripts/bump-patch-version.sh    # or set the desired version in both files
-    swift test && ./build.sh
-    git commit -am "Release vX.Y.Z"
-    git tag vX.Y.Z
-    git push --atomic origin main vX.Y.Z
-    ```
-    The tag push automatically creates the matching GitHub Release. For workflow recovery, create it directly:
-    ```sh
-    gh release create vX.Y.Z --verify-tag --title vX.Y.Z --generate-notes --latest
-    ```
+This secret lets **Daily pricing release** dispatch the tap workflow. A missing
+secret skips immediate dispatch with a warning; an invalid or expired secret
+fails that step even if the release was already published. The tap's daily sync
+is a fallback. The built-in `GITHUB_TOKEN` is provided automatically and does
+not need to be stored as a repository secret.
 
-2. **Update the formula manually** (in `shrivara/homebrew-tap`):
-   ```sh
-   curl -fsSL https://github.com/shrivara/token-bar/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
-   # set url + sha256 in Formula/token-bar.rb, commit, push
-   ```
+## Publish a feature or fix release
 
-3. **Build bottles manually** (prebuilt binaries so users don't compile):
-   ```sh
-   gh workflow run bottle.yml --repo shrivara/homebrew-tap
-   ```
-   The workflow builds on supported macOS 15/26 (arm64) runner images,
-   uploads bottles to a `bottles-token-bar-X.Y.Z` release on the tap, and
-   commits the `bottle do` block into the formula. Verify the run went green
-   before announcing. GitHub has retired its macOS 14 runners; macOS 14
-   remains supported through source builds with the Xcode Command Line Tools.
+Use an authenticated `gh` login with access to both repositories. Run these
+commands from the repository root in the same shell so the `version` and `tag`
+variables remain available.
 
-Users then get the new version via `brew update && brew upgrade token-bar`.
+### 1. Prepare the version
+
+Start with a clean working tree and update `main`:
+
+```sh
+git switch main
+git pull --ff-only
+git status --short
+gh run list --repo shrivara/token-bar --workflow daily-pricing.yml --limit 5
+```
+
+Wait for any active pricing-release run to finish before choosing the version,
+then update `main` again if that run created a commit.
+
+A feature release can use the existing pricing snapshot. Refreshing it is
+optional; see [Updating prices](DEVELOPMENT.md#updating-prices).
+
+Bump the patch version in both `build.sh` and `Sources/token-bar/main.swift`:
+
+```sh
+version=$(./Scripts/bump-patch-version.sh)
+tag="v${version}"
+git diff -- Sources/token-bar/main.swift build.sh
+```
+
+Confirm that the version is correct and the tag is unused. Do not move or
+replace an existing release tag.
+
+### 2. Test, commit, and tag
+
+```sh
+swift test
+./build.sh
+./Scripts/verify-app.sh
+```
+
+Resolve any failures before continuing. For scanner or CLI compatibility
+changes, also run the [CLI integration tests](DEVELOPMENT.md#cli-integration-tests).
+
+Stage only the intended release changes. If you refreshed the pricing catalog,
+review and stage that file separately before committing.
+
+```sh
+git add -- Sources/token-bar/main.swift build.sh
+git commit -m "Release $tag"
+git tag "$tag"
+git push --atomic origin main "$tag"
+```
+
+The atomic push publishes the branch and tag together. The tag starts
+**GitHub release**, while the branch update starts CI.
+
+### 3. Verify publication and update Homebrew
+
+Find the runs for the release commit:
+
+```sh
+gh run list --repo shrivara/token-bar --commit "$(git rev-parse "$tag")"
+```
+
+Wait for CI and **GitHub release** to succeed. Replace `RUN_ID` with each run's
+ID to follow its result:
+
+```sh
+gh run watch RUN_ID --repo shrivara/token-bar --exit-status
+```
+
+Then confirm the release and start Homebrew synchronization:
+
+```sh
+gh release view "$tag" --repo shrivara/token-bar
+gh workflow run sync-token-bar.yml --repo shrivara/homebrew-tap --ref main
+gh run list --repo shrivara/homebrew-tap --limit 5
+```
+
+The sync workflow calculates the source archive checksum, updates the formula,
+and starts **Bottle**. There is no need to edit the formula manually for a
+normal release.
+
+Wait for both **Sync token-bar** and **Bottle** to succeed, using their run IDs
+with the tap repository:
+
+```sh
+gh run watch RUN_ID --repo shrivara/homebrew-tap --exit-status
+```
+
+Then check the bottle release:
+
+```sh
+gh release view "bottles-token-bar-${version}" --repo shrivara/homebrew-tap
+```
+
+The bottle workflow builds and tests Apple Silicon packages on macOS 15 and 26,
+uploads them to the tap's release, and commits their checksums to the formula.
+These are the build environments, not the app's supported OS range: Token Bar
+supports macOS 14 and later. Homebrew selects a compatible bottle when available
+and otherwise builds from source with the Xcode Command Line Tools. GitHub has
+retired its macOS 14 runners, so new releases no longer include Sonoma bottles.
+
+Only announce Homebrew availability after the bottle build and publish job
+succeeds. Users can then update with:
+
+```sh
+brew update
+brew upgrade token-bar
+brew services restart token-bar
+```
+
+## Recover a partial release
+
+These steps assume you are recovering the latest intended release. Sync always
+selects the latest version tag; it does not roll Homebrew back to an older one.
+
+Set `tag` and `version` to that release before using the commands below (for
+example, `tag=vX.Y.Z` and `version=X.Y.Z`, replacing `X.Y.Z` with the actual version).
+
+- If tests passed and the tag exists but the GitHub release was not published,
+  inspect the failed workflow before retrying. You can publish it manually:
+
+  ```sh
+  gh release create "$tag" --repo shrivara/token-bar --verify-tag \
+    --title "$tag" --generate-notes --latest
+  ```
+
+- If the release exists but tap dispatch failed, fix `TAP_WORKFLOW_TOKEN` if
+  necessary and run **Sync token-bar**. Do not rerun an old pricing-release job
+  just to retry the tap: it can bump another version or reuse an old catalog.
+
+  ```sh
+  gh workflow run sync-token-bar.yml --repo shrivara/homebrew-tap --ref main
+  ```
+
+- If the formula already points to the intended version but its bottles failed,
+  rerun the bottle workflow with the expected version:
+
+  ```sh
+  gh workflow run bottle.yml --repo shrivara/homebrew-tap --ref main \
+    -f version="$version"
+  ```
+
+Rebuilding bottles can replace existing bottle assets and update the formula's
+checksums. Verify the publish job before considering recovery complete.
