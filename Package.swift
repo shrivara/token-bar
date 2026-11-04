@@ -16,5 +16,6 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .testTarget(name: "TokenBarCoreTests", dependencies: ["TokenBarCore"]),
+        .testTarget(name: "TokenBarAppTests", dependencies: ["token-bar"]),
     ]
 )

@@ -1176,6 +1176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.mainMenu = makeApplicationMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         panelPopover.behavior = .transient
         panelPopover.animates = false
@@ -1536,6 +1537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         input.placeholderString = "e.g. work-server or user@hostname"
         alert.accessoryView = input
+        alert.window.initialFirstResponder = input
         while alert.runModal() == .alertFirstButtonReturn {
             do {
                 let host = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1656,6 +1658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         input.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
         input.placeholderString = "e.g. 10.00"
         alert.accessoryView = input
+        alert.window.initialFirstResponder = input
         while alert.runModal() == .alertFirstButtonReturn {
             let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.isEmpty {
