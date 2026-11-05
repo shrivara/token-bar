@@ -103,6 +103,11 @@ final class ApplicationMenuTests: XCTestCase {
                 alert.window.orderOut(nil)
                 app.mainMenu = previousMenu
             }
+            // A manually driven modal session doesn't consistently apply the
+            // initial responder on every macOS version. Set focus explicitly
+            // before testing shortcut routing through the real field editor.
+            alert.window.makeKey()
+            XCTAssertTrue(alert.window.makeFirstResponder(input))
             let editor = try XCTUnwrap(input.currentEditor() as? NSTextView)
             for modifier in [NSEvent.ModifierFlags.command, .control] {
                 editor.setSelectedRange(NSRange(location: 5, length: 0))
